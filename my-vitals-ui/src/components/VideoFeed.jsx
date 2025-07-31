@@ -75,13 +75,13 @@ export default function VideoFeed({ className, onFrameData }) {
             // Extract rPPG signal if callback is provided
             if (onFrameData) {
                 try {
-                    const { greenValue, brightness } = extractRPPGSignal(
+                    const { rgbValues, brightness } = extractRPPGSignal(
                         landmarks, 
                         video, 
                         processingCtx, 
                         CONFIG
                     );
-                    onFrameData(greenValue, brightness);
+                    onFrameData(rgbValues, brightness);
                 } catch (error) {
                     console.error('Error extracting rPPG signal:', error);
                 }
@@ -149,13 +149,13 @@ export default function VideoFeed({ className, onFrameData }) {
 }
 
 /**
- * Extract rPPG signal from facial landmarks
+ * Extract rPPG signal from facial landmarks using improved skin segmentation
  * 
  * @param {Array} landmarks - Facial landmark coordinates
  * @param {HTMLVideoElement} video - Video element
  * @param {CanvasRenderingContext2D} ctx - Processing canvas context
  * @param {Object} config - Configuration object
- * @returns {Object} Extracted green value and brightness
+ * @returns {Object} Extracted RGB values and brightness
  */
 function extractRPPGSignal(landmarks, video, ctx, config) {
     // Calculate face width using eye corners
@@ -164,39 +164,93 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
     const faceWidth = (rightEye.x - leftEye.x) * config.VIDEO_WIDTH;
     const roiSize = faceWidth * config.ROI_SCALE;
 
-    // Define regions of interest
+    // Improved regions of interest for better skin coverage
     const regions = [
-        // Forehead region
+        // Forehead region (most reliable for rPPG)
         {
-            x: ((landmarks[19].x + landmarks[24].x) / 2) * config.VIDEO_WIDTH,
-            y: ((landmarks[19].y + landmarks[24].y) / 2) * config.VIDEO_HEIGHT - faceWidth * 0.1
+            x: ((landmarks[9].x + landmarks[10].x) / 2) * config.VIDEO_WIDTH,
+            y: ((landmarks[9].y + landmarks[10].y) / 2) * config.VIDEO_HEIGHT - faceWidth * 0.15,
+            size: roiSize * 1.2,
+            weight: 3.0
         },
-        // Nose region
+        // Left cheek region
         {
-            x: landmarks[2].x * config.VIDEO_WIDTH,
-            y: landmarks[2].y * config.VIDEO_HEIGHT
+            x: landmarks[116].x * config.VIDEO_WIDTH,
+            y: landmarks[116].y * config.VIDEO_HEIGHT,
+            size: roiSize,
+            weight: 2.0
         },
-        // Chin region
+        // Right cheek region
         {
-            x: landmarks[14].x * config.VIDEO_WIDTH,
-            y: landmarks[14].y * config.VIDEO_HEIGHT
+            x: landmarks[345].x * config.VIDEO_WIDTH,
+            y: landmarks[345].y * config.VIDEO_HEIGHT,
+            size: roiSize,
+            weight: 2.0
+        },
+        // Nose bridge (secondary region)
+        {
+            x: landmarks[6].x * config.VIDEO_WIDTH,
+            y: landmarks[6].y * config.VIDEO_HEIGHT,
+            size: roiSize * 0.8,
+            weight: 1.0
         }
     ];
 
-    let totalGreen = 0;
+    let totalRGB = { r: 0, g: 0, b: 0 };
     let totalBrightness = 0;
-    let validRegions = 0;
+    let totalWeight = 0;
 
-    // Process each region
+    // Process each region with skin filtering
     regions.forEach(region => {
-        const x1 = Math.max(0, Math.floor(region.x - roiSize));
-        const y1 = Math.max(0, Math.floor(region.y - roiSize));
-        const width = Math.min(config.VIDEO_WIDTH - x1, Math.floor(2 * roiSize));
-        const height = Math.min(config.VIDEO_HEIGHT - y1, Math.floor(2 * roiSize));
+        const rgbData = extractRegionRGB(region, video, ctx, config);
+        if (rgbData && rgbData.validPixels > 0) {
+            const effectiveWeight = region.weight * rgbData.skinRatio;
+            
+            totalRGB.r += rgbData.r * effectiveWeight;
+            totalRGB.g += rgbData.g * effectiveWeight;
+            totalRGB.b += rgbData.b * effectiveWeight;
+            totalBrightness += rgbData.brightness * effectiveWeight;
+            totalWeight += effectiveWeight;
+        }
+    });
 
-        if (width <= 0 || height <= 0) return;
+    if (totalWeight === 0) {
+        return {
+            rgbValues: { r: 0, g: 0, b: 0 },
+            brightness: 0
+        };
+    }
 
-        // Extract ROI
+    return {
+        rgbValues: {
+            r: totalRGB.r / totalWeight,
+            g: totalRGB.g / totalWeight,
+            b: totalRGB.b / totalWeight
+        },
+        brightness: totalBrightness / totalWeight
+    };
+}
+
+/**
+ * Extract RGB values from a specific facial region with skin filtering
+ * 
+ * @param {Object} region - Region definition
+ * @param {HTMLVideoElement} video - Video element
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {Object} config - Configuration object
+ * @returns {Object|null} RGB data with skin filtering
+ */
+function extractRegionRGB(region, video, ctx, config) {
+    try {
+        const halfSize = region.size / 2;
+        const x1 = Math.max(0, Math.floor(region.x - halfSize));
+        const y1 = Math.max(0, Math.floor(region.y - halfSize));
+        const width = Math.min(config.VIDEO_WIDTH - x1, Math.floor(region.size));
+        const height = Math.min(config.VIDEO_HEIGHT - y1, Math.floor(region.size));
+
+        if (width <= 0 || height <= 0) return null;
+
+        // Extract region to processing canvas
         ctx.drawImage(
             video, x1, y1, width, height,
             0, 0, config.PROCESSING_SIZE, config.PROCESSING_SIZE
@@ -204,29 +258,78 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
 
         const imageData = ctx.getImageData(0, 0, config.PROCESSING_SIZE, config.PROCESSING_SIZE).data;
         
-        let regionGreen = 0;
-        let regionBrightness = 0;
-        const pixelCount = imageData.length / 4;
+        let r_sum = 0, g_sum = 0, b_sum = 0, brightness_sum = 0;
+        let skinPixels = 0, totalPixels = 0;
 
-        // Analyze pixels
+        // Analyze each pixel with skin color filtering
         for (let i = 0; i < imageData.length; i += 4) {
             const r = imageData[i];
             const g = imageData[i + 1];
             const b = imageData[i + 2];
-
-            regionGreen += g;
-            regionBrightness += 0.299 * r + 0.587 * g + 0.114 * b;
+            
+            totalPixels++;
+            
+            // Apply skin color filter
+            if (isSkinPixel(r, g, b)) {
+                r_sum += r;
+                g_sum += g;
+                b_sum += b;
+                brightness_sum += 0.299 * r + 0.587 * g + 0.114 * b;
+                skinPixels++;
+            }
         }
 
-        totalGreen += (regionGreen / pixelCount) / 255;
-        totalBrightness += (regionBrightness / pixelCount) / 255;
-        validRegions++;
-    });
+        if (skinPixels === 0) return null;
 
-    return {
-        greenValue: validRegions > 0 ? totalGreen / validRegions : 0,
-        brightness: validRegions > 0 ? totalBrightness / validRegions : 0
-    };
+        return {
+            r: (r_sum / skinPixels) / 255,
+            g: (g_sum / skinPixels) / 255,
+            b: (b_sum / skinPixels) / 255,
+            brightness: (brightness_sum / skinPixels) / 255,
+            validPixels: skinPixels,
+            skinRatio: skinPixels / totalPixels
+        };
+
+    } catch (error) {
+        console.error('Error extracting region RGB:', error);
+        return null;
+    }
+}
+
+/**
+ * Determine if a pixel represents skin color
+ * 
+ * @param {number} r - Red value (0-255)
+ * @param {number} g - Green value (0-255)
+ * @param {number} b - Blue value (0-255)
+ * @returns {boolean} True if pixel is likely skin
+ */
+function isSkinPixel(r, g, b) {
+    // Normalize RGB values
+    const rNorm = r / 255;
+    const gNorm = g / 255;
+    const bNorm = b / 255;
+    
+    // Skin color constraints based on research
+    if (rNorm < 0.35 || rNorm > 1.0) return false;
+    if (gNorm < 0.25 || gNorm > 0.85) return false;
+    if (bNorm < 0.15 || bNorm > 0.75) return false;
+    
+    // Skin-specific constraints
+    if (rNorm <= gNorm || rNorm <= bNorm) return false;
+    
+    // Brightness constraints
+    const brightness = 0.299 * rNorm + 0.587 * gNorm + 0.114 * bNorm;
+    if (brightness < 0.2 || brightness > 0.95) return false;
+    
+    // Color ratio constraints
+    const rg_ratio = rNorm / (gNorm + 1e-8);
+    const rb_ratio = rNorm / (bNorm + 1e-8);
+    
+    if (rg_ratio < 1.1 || rg_ratio > 2.0) return false;
+    if (rb_ratio < 1.2 || rb_ratio > 2.5) return false;
+    
+    return true;
 }
 
 VideoFeed.propTypes = {

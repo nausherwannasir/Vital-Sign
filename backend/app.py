@@ -28,78 +28,231 @@ MAX_HR_FREQ = 3.0  # Maximum heart rate frequency (Hz) - 180 BPM
 FILTER_ORDER = 4   # Butterworth filter order
 WELCH_SEGMENT_SIZE = 128  # Segment size for Welch's method
 
-def compute_bpm(signal: List[float], fs: int = DEFAULT_SAMPLING_RATE) -> Optional[float]:
+def compute_bpm(rgb_signals: dict, fs: int = DEFAULT_SAMPLING_RATE) -> Optional[float]:
     """
-    Compute heart rate (BPM) from a photoplethysmographic signal.
+    Compute heart rate (BPM) using chrominance-based rPPG method.
     
-    This function implements a signal processing pipeline to extract heart rate
-    from a time-series signal obtained from facial video analysis.
+    This implements the CHROM method by de Haan & Jeanne (2013) which is more
+    robust than simple green channel analysis.
     
     Args:
-        signal (List[float]): Array of normalized green channel values
+        rgb_signals (dict): Dictionary containing 'r', 'g', 'b' signal arrays
         fs (int, optional): Sampling frequency in Hz. Defaults to 30.
     
     Returns:
         Optional[float]: Heart rate in beats per minute, or None if no valid peak found
     
     Raises:
-        ValueError: If signal is too short or sampling rate is invalid
+        ValueError: If signals are too short or sampling rate is invalid
     """
     try:
         # Input validation
-        if len(signal) < MIN_SIGNAL_LENGTH:
-            logger.warning(f"Signal too short: {len(signal)} < {MIN_SIGNAL_LENGTH}")
+        required_keys = ['r', 'g', 'b']
+        if not all(key in rgb_signals for key in required_keys):
+            logger.warning("Missing RGB signal components")
+            return None
+            
+        signal_length = len(rgb_signals['r'])
+        if signal_length < MIN_SIGNAL_LENGTH:
+            logger.warning(f"Signal too short: {signal_length} < {MIN_SIGNAL_LENGTH}")
             return None
             
         if fs <= 0:
             raise ValueError("Sampling frequency must be positive")
         
-        # Convert to numpy array and remove DC component
-        sig = np.array(signal, dtype=np.float64)
-        sig = detrend(sig)
+        # Convert to numpy arrays
+        r_signal = np.array(rgb_signals['r'], dtype=np.float64)
+        g_signal = np.array(rgb_signals['g'], dtype=np.float64)
+        b_signal = np.array(rgb_signals['b'], dtype=np.float64)
         
-        # Design and apply bandpass filter (0.8-3.0 Hz for heart rate)
+        # Validate signal lengths are consistent
+        if not (len(r_signal) == len(g_signal) == len(b_signal)):
+            logger.warning("RGB signal lengths are inconsistent")
+            return None
+        
+        # Apply temporal normalization (standardization)
+        r_signal = temporal_normalize(r_signal)
+        g_signal = temporal_normalize(g_signal)
+        b_signal = temporal_normalize(b_signal)
+        
+        # CHROM method: Chrominance-based rPPG
+        # Based on de Haan & Jeanne (2013)
+        x_chrom = 3 * r_signal - 2 * g_signal
+        y_chrom = 1.5 * r_signal + g_signal - 1.5 * b_signal
+        
+        # Apply moving average filter to reduce noise
+        window_size = max(5, fs // 6)  # ~5 samples at 30fps
+        x_chrom = moving_average(x_chrom, window_size)
+        y_chrom = moving_average(y_chrom, window_size)
+        
+        # Compute alpha (adaptive balancing)
+        alpha = np.std(x_chrom) / np.std(y_chrom) if np.std(y_chrom) > 0 else 1.0
+        
+        # Pulse signal
+        pulse_signal = x_chrom - alpha * y_chrom
+        
+        # Additional preprocessing
+        pulse_signal = detrend(pulse_signal)
+        
+        # Apply optimized bandpass filter
+        bpm_result = extract_heart_rate_from_pulse(pulse_signal, fs)
+        
+        if bpm_result:
+            logger.info(f"CHROM BPM: {bpm_result:.1f}")
+            return bpm_result
+        
+        # Fallback to improved GREEN method if CHROM fails
+        logger.info("CHROM failed, trying improved GREEN method")
+        return fallback_green_method(g_signal, fs)
+        
+    except Exception as e:
+        logger.error(f"Error computing BPM: {str(e)}")
+        return None
+
+def temporal_normalize(signal: np.ndarray) -> np.ndarray:
+    """
+    Apply temporal normalization to remove illumination changes.
+    
+    Args:
+        signal: Input signal array
+        
+    Returns:
+        Normalized signal
+    """
+    # Remove DC component
+    signal_mean = np.mean(signal)
+    if signal_mean > 0:
+        signal = signal / signal_mean - 1.0
+    else:
+        signal = detrend(signal)
+    
+    return signal
+
+def moving_average(signal: np.ndarray, window_size: int) -> np.ndarray:
+    """
+    Apply moving average filter to reduce noise.
+    
+    Args:
+        signal: Input signal
+        window_size: Size of the moving window
+        
+    Returns:
+        Filtered signal
+    """
+    if window_size <= 1:
+        return signal
+    
+    # Use convolution for efficient moving average
+    kernel = np.ones(window_size) / window_size
+    # Use 'same' mode to maintain signal length
+    return np.convolve(signal, kernel, mode='same')
+
+def extract_heart_rate_from_pulse(pulse_signal: np.ndarray, fs: int) -> Optional[float]:
+    """
+    Extract heart rate from pulse signal using improved spectral analysis.
+    
+    Args:
+        pulse_signal: Preprocessed pulse signal
+        fs: Sampling frequency
+        
+    Returns:
+        Heart rate in BPM or None
+    """
+    try:
+        # Apply adaptive bandpass filter
         nyquist = fs / 2
         low_cutoff = MIN_HR_FREQ / nyquist
         high_cutoff = MAX_HR_FREQ / nyquist
         
-        # Ensure cutoff frequencies are valid
-        if high_cutoff >= 1.0:
-            high_cutoff = 0.99
-            logger.warning("High cutoff frequency adjusted to prevent aliasing")
+        # Ensure valid cutoff frequencies
+        high_cutoff = min(high_cutoff, 0.99)
         
-        b, a = butter(FILTER_ORDER, [low_cutoff, high_cutoff], btype='band')
-        sig_filtered = filtfilt(b, a, sig)
+        # Use higher order filter for better frequency selectivity
+        filter_order = min(6, len(pulse_signal) // 20)  # Adaptive filter order
+        b, a = butter(filter_order, [low_cutoff, high_cutoff], btype='band')
+        filtered_signal = filtfilt(b, a, pulse_signal)
         
-        # Compute power spectral density using Welch's method
+        # Improved spectral analysis
+        # Use optimal segment size for given signal length
+        segment_length = min(len(filtered_signal) // 2, 256)
+        overlap = segment_length // 2
+        
         frequencies, power_spectrum = welch(
-            sig_filtered, 
-            fs, 
-            nperseg=min(WELCH_SEGMENT_SIZE, len(sig_filtered) // 4)
+            filtered_signal,
+            fs=fs,
+            nperseg=segment_length,
+            noverlap=overlap,
+            window='hann'
         )
         
-        # Find peak in physiological frequency range
+        # Find peaks in physiological range
         freq_mask = np.logical_and(frequencies >= MIN_HR_FREQ, frequencies <= MAX_HR_FREQ)
         
         if not np.any(freq_mask):
-            logger.warning("No frequencies in physiological range")
             return None
         
-        # Get the frequency with maximum power in the valid range
         valid_frequencies = frequencies[freq_mask]
         valid_power = power_spectrum[freq_mask]
         
-        if len(valid_power) == 0:
+        # Find the most prominent peak
+        peak_idx = np.argmax(valid_power)
+        peak_freq = valid_frequencies[peak_idx]
+        peak_power = valid_power[peak_idx]
+        
+        # Validate peak quality
+        # Check if peak is significantly higher than surrounding frequencies
+        noise_floor = np.median(valid_power)
+        snr = peak_power / noise_floor if noise_floor > 0 else 0
+        
+        if snr < 2.0:  # Minimum signal-to-noise ratio
+            logger.warning(f"Low SNR detected: {snr:.2f}")
             return None
-            
-        peak_freq = valid_frequencies[np.argmax(valid_power)]
+        
+        # Convert to BPM
         bpm = float(peak_freq * 60)
         
-        logger.info(f"Computed BPM: {bpm:.1f}")
+        # Additional validation: check for harmonics
+        # If detected BPM is likely a harmonic, try to find the fundamental
+        if bpm > 120:  # Likely harmonic
+            fundamental_freq = peak_freq / 2
+            if MIN_HR_FREQ <= fundamental_freq <= MAX_HR_FREQ:
+                # Check if fundamental has significant power
+                fundamental_idx = np.argmin(np.abs(valid_frequencies - fundamental_freq))
+                fundamental_power = valid_power[fundamental_idx]
+                
+                if fundamental_power > peak_power * 0.5:  # Strong fundamental
+                    bpm = float(fundamental_freq * 60)
+                    logger.info(f"Using fundamental frequency: {bpm:.1f} BPM")
+        
         return bpm
         
     except Exception as e:
-        logger.error(f"Error computing BPM: {str(e)}")
+        logger.error(f"Error in spectral analysis: {str(e)}")
+        return None
+
+def fallback_green_method(g_signal: np.ndarray, fs: int) -> Optional[float]:
+    """
+    Fallback method using improved green channel analysis.
+    
+    Args:
+        g_signal: Green channel signal
+        fs: Sampling frequency
+        
+    Returns:
+        Heart rate in BPM or None
+    """
+    try:
+        # Normalize green signal
+        g_normalized = temporal_normalize(g_signal)
+        
+        # Apply stronger preprocessing for green channel
+        g_filtered = moving_average(g_normalized, max(3, fs // 10))
+        g_filtered = detrend(g_filtered)
+        
+        return extract_heart_rate_from_pulse(g_filtered, fs)
+        
+    except Exception as e:
+        logger.error(f"Error in fallback green method: {str(e)}")
         return None
 
 @app.route('/predict', methods=['POST'])
@@ -124,29 +277,72 @@ def predict():
         if data is None:
             return jsonify({'error': 'Invalid JSON payload'}), 400
         
-        # Validate signal data
-        signal = data.get('signal')
-        if signal is None:
-            return jsonify({'error': 'Missing signal field'}), 400
+        # Validate signal data - support both old (green-only) and new (RGB) formats
+        rgb_signals = {}
         
-        if not isinstance(signal, list):
-            return jsonify({'error': 'Signal must be an array'}), 400
+        # Check if new RGB format is provided
+        if 'rgb_signals' in data:
+            rgb_data = data['rgb_signals']
+            if not isinstance(rgb_data, dict):
+                return jsonify({'error': 'rgb_signals must be an object'}), 400
+            
+            required_channels = ['r', 'g', 'b']
+            for channel in required_channels:
+                if channel not in rgb_data:
+                    return jsonify({'error': f'Missing {channel} channel in rgb_signals'}), 400
+                
+                if not isinstance(rgb_data[channel], list):
+                    return jsonify({'error': f'{channel} channel must be an array'}), 400
+                
+                if len(rgb_data[channel]) < MIN_SIGNAL_LENGTH:
+                    return jsonify({
+                        'error': f'{channel} signal too short. Minimum {MIN_SIGNAL_LENGTH} samples required',
+                        'received': len(rgb_data[channel])
+                    }), 400
+                
+                # Validate and convert signal values
+                try:
+                    rgb_signals[channel] = [float(x) for x in rgb_data[channel]]
+                except (ValueError, TypeError):
+                    return jsonify({'error': f'{channel} signal values must be numeric'}), 400
+            
+            # Validate all channels have same length
+            lengths = [len(rgb_signals[ch]) for ch in required_channels]
+            if not all(l == lengths[0] for l in lengths):
+                return jsonify({'error': 'All RGB channels must have the same length'}), 400
         
-        if len(signal) < MIN_SIGNAL_LENGTH:
-            logger.info(f"Signal too short: {len(signal)} samples")
-            return jsonify({
-                'error': f'Signal too short. Minimum {MIN_SIGNAL_LENGTH} samples required',
-                'received': len(signal)
-            }), 400
+        # Check for legacy single signal format (backward compatibility)
+        elif 'signal' in data:
+            legacy_signal = data['signal']
+            if not isinstance(legacy_signal, list):
+                return jsonify({'error': 'Signal must be an array'}), 400
+            
+            if len(legacy_signal) < MIN_SIGNAL_LENGTH:
+                logger.info(f"Signal too short: {len(legacy_signal)} samples")
+                return jsonify({
+                    'error': f'Signal too short. Minimum {MIN_SIGNAL_LENGTH} samples required',
+                    'received': len(legacy_signal)
+                }), 400
+            
+            # Validate signal values
+            try:
+                signal_array = [float(x) for x in legacy_signal]
+            except (ValueError, TypeError):
+                return jsonify({'error': 'Signal values must be numeric'}), 400
+            
+            # Convert legacy format to RGB (assume it's green channel)
+            rgb_signals = {
+                'r': signal_array,  # Use same signal for all channels as fallback
+                'g': signal_array,
+                'b': signal_array
+            }
+            logger.info("Using legacy signal format (backward compatibility)")
         
-        # Validate signal values
-        try:
-            signal_array = [float(x) for x in signal]
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Signal values must be numeric'}), 400
+        else:
+            return jsonify({'error': 'Missing signal data. Provide either "rgb_signals" or "signal"'}), 400
         
-        # Compute heart rate
-        bpm = compute_bpm(signal_array, fs=DEFAULT_SAMPLING_RATE)
+        # Compute heart rate using improved algorithm
+        bpm = compute_bpm(rgb_signals, fs=DEFAULT_SAMPLING_RATE)
         
         if bpm is None:
             logger.info("No valid heart rate detected")

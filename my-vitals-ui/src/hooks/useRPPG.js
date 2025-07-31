@@ -13,7 +13,7 @@ export default function useRPPG() {
     const [signalStrength, setSignalStrength] = useState(0);
     
     // Refs for persistent state across renders
-    const greenBufferRef = useRef([]);
+    const rgbBuffersRef = useRef({ r: [], g: [], b: [] });
     const processingRef = useRef(false);
     const lastUpdateRef = useRef(0);
     
@@ -50,32 +50,47 @@ export default function useRPPG() {
     }, []);
     
     /**
-     * Process new green channel value from video frame
+     * Process new RGB frame data from video
      */
-    const processFrame = useCallback((greenValue, brightness) => {
+    const processFrame = useCallback((rgbData, brightness) => {
         // Update lighting status
         setLighting(brightness < CONFIG.MIN_BRIGHTNESS ? 'Poor lighting' : 'Good lighting');
         
-        // Add to buffer (circular buffer)
-        greenBufferRef.current.push(greenValue);
-        if (greenBufferRef.current.length > CONFIG.BUFFER_SIZE) {
-            greenBufferRef.current.shift();
+        // Add to RGB buffers (circular buffers)
+        rgbBuffersRef.current.r.push(rgbData.r);
+        rgbBuffersRef.current.g.push(rgbData.g);
+        rgbBuffersRef.current.b.push(rgbData.b);
+        
+        // Maintain buffer sizes
+        ['r', 'g', 'b'].forEach(channel => {
+            if (rgbBuffersRef.current[channel].length > CONFIG.BUFFER_SIZE) {
+                rgbBuffersRef.current[channel].shift();
+            }
+        });
+        
+        // Update signal strength indicator based on recent data
+        const currentLength = rgbBuffersRef.current.r.length;
+        if (currentLength >= 30) {
+            const recentR = rgbBuffersRef.current.r.slice(-30);
+            const recentG = rgbBuffersRef.current.g.slice(-30);
+            const recentB = rgbBuffersRef.current.b.slice(-30);
+            
+            const strength = calculateSignalQuality({ r: recentR, g: recentG, b: recentB });
+            setSignalStrength(strength * 100); // Convert to percentage
         }
         
-        // Update signal strength indicator
-        const currentSignal = greenBufferRef.current.slice(-30); // Last 1 second
-        const strength = calculateSignalQuality(currentSignal);
-        setSignalStrength(strength);
-        
-        // Update quality based on buffer size and signal strength
-        if (greenBufferRef.current.length < CONFIG.BUFFER_SIZE) {
-            setQuality(`Collecting data... ${greenBufferRef.current.length}/${CONFIG.BUFFER_SIZE}`);
-        } else if (strength < 10) {
-            setQuality('Weak signal - stay still');
-        } else if (strength < 30) {
-            setQuality('Fair signal');
+        // Update quality based on buffer size and signal characteristics
+        if (currentLength < CONFIG.BUFFER_SIZE) {
+            setQuality(`Collecting data... ${currentLength}/${CONFIG.BUFFER_SIZE}`);
         } else {
-            setQuality('Good signal');
+            const fullSignalQuality = calculateSignalQuality(rgbBuffersRef.current);
+            if (fullSignalQuality < 0.3) {
+                setQuality('Poor signal - check lighting and stay still');
+            } else if (fullSignalQuality < 0.6) {
+                setQuality('Fair signal quality');
+            } else {
+                setQuality('Good signal quality');
+            }
         }
     }, [calculateSignalQuality, CONFIG.BUFFER_SIZE, CONFIG.MIN_BRIGHTNESS]);
     
@@ -90,7 +105,7 @@ export default function useRPPG() {
         }
         
         // Check buffer size
-        if (greenBufferRef.current.length < CONFIG.BUFFER_SIZE) {
+        if (rgbBuffersRef.current.r.length < CONFIG.BUFFER_SIZE) {
             return;
         }
         
@@ -99,17 +114,19 @@ export default function useRPPG() {
         lastUpdateRef.current = now;
         
         try {
-            // Prepare signal
-            const signal = detrend([...greenBufferRef.current]);
+            // Prepare RGB signals
+            const rgbSignals = {
+                r: [...rgbBuffersRef.current.r],
+                g: [...rgbBuffersRef.current.g],
+                b: [...rgbBuffersRef.current.b]
+            };
             
             // Validate signal quality
-            const signalStd = Math.sqrt(
-                signal.reduce((sum, val) => sum + val * val, 0) / signal.length
-            );
+            const signalQuality = calculateSignalQuality(rgbSignals);
             
-            if (signalStd < CONFIG.MIN_SIGNAL_STD) {
+            if (signalQuality < 0.2) {
                 setBpm(null);
-                setQuality('Motion detected - please stay still');
+                setQuality('Poor signal quality - please ensure good lighting and stay still');
                 return;
             }
             
@@ -122,7 +139,7 @@ export default function useRPPG() {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ signal }),
+                body: JSON.stringify({ rgb_signals: rgbSignals }),
                 signal: controller.signal
             });
             
@@ -171,7 +188,7 @@ export default function useRPPG() {
     
     // Reset function for clearing data
     const reset = useCallback(() => {
-        greenBufferRef.current = [];
+        rgbBuffersRef.current = { r: [], g: [], b: [] };
         setBpm(null);
         setQuality('Initializing...');
         setLighting('Initializing...');
@@ -185,7 +202,7 @@ export default function useRPPG() {
         lighting,
         isProcessing,
         signalStrength,
-        bufferSize: greenBufferRef.current.length,
+        bufferSize: rgbBuffersRef.current.r.length,
         maxBufferSize: CONFIG.BUFFER_SIZE,
         processFrame,
         reset
