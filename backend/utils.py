@@ -35,9 +35,7 @@ class RateLimiter:
 
         # Remove old requests outside window
         self.requests[identifier] = [
-            req_time
-            for req_time in self.requests[identifier]
-            if now - req_time < self.window
+            req_time for req_time in self.requests[identifier] if now - req_time < self.window
         ]
 
         # Check limit
@@ -66,8 +64,8 @@ def rate_limit(limiter: RateLimiter, key_func: Callable = None):
                 key = request.remote_addr
 
             if not limiter.is_allowed(key):
-                logger.warning(f'Rate limit exceeded for {key}')
-                return jsonify({'error': 'Rate limit exceeded'}), 429
+                logger.warning(f"Rate limit exceeded for {key}")
+                return jsonify({"error": "Rate limit exceeded"}), 429
 
             return f(*args, **kwargs)
 
@@ -82,9 +80,7 @@ def log_request():
 
     def after_request(response):
         duration = time.time() - g.start_time
-        logger.info(
-            f'{request.method} {request.path} - {response.status_code} ({duration:.3f}s)'
-        )
+        logger.info(f"{request.method} {request.path} - {response.status_code} ({duration:.3f}s)")
         return response
 
     return after_request
@@ -103,19 +99,19 @@ def validate_signal(signal: list, min_length: int = 50, max_length: int = 10000)
         Tuple of (is_valid, error_message)
     """
     if not isinstance(signal, list):
-        return False, 'Signal must be an array'
+        return False, "Signal must be an array"
 
     if len(signal) < min_length:
-        return False, f'Signal too short. Minimum {min_length} samples required'
+        return False, f"Signal too short. Minimum {min_length} samples required"
 
     if len(signal) > max_length:
-        return False, f'Signal too long. Maximum {max_length} samples allowed'
+        return False, f"Signal too long. Maximum {max_length} samples allowed"
 
     # Validate signal values
     for i, value in enumerate(signal):
         try:
             float(value)
         except (ValueError, TypeError):
-            return False, f'Signal value at index {i} is not numeric'
+            return False, f"Signal value at index {i} is not numeric"
 
     return True, None

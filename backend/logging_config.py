@@ -14,23 +14,23 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
         log_data: Dict[str, Any] = {
-            'timestamp': self.formatTime(record),
-            'level': record.levelname,
-            'logger': record.name,
-            'message': record.getMessage(),
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
         }
 
         if record.exc_info:
-            log_data['exception'] = self.formatException(record.exc_info)
+            log_data["exception"] = self.formatException(record.exc_info)
 
         # Add extra fields if present
-        if hasattr(record, 'extra'):
+        if hasattr(record, "extra"):
             log_data.update(record.extra)
 
         return json.dumps(log_data)
 
 
-def setup_logging(log_level: str = 'INFO', log_format: str = 'plain'):
+def setup_logging(log_level: str = "INFO", log_format: str = "plain"):
     """
     Setup logging configuration.
 
@@ -49,12 +49,10 @@ def setup_logging(log_level: str = 'INFO', log_format: str = 'plain'):
     # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)
 
-    if log_format.lower() == 'json':
+    if log_format.lower() == "json":
         formatter = JSONFormatter()
     else:
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)

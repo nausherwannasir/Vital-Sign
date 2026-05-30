@@ -12,7 +12,7 @@ from app import app, compute_bpm
 @pytest.fixture
 def client():
     """Create a test client for the Flask app."""
-    app.config['TESTING'] = True
+    app.config["TESTING"] = True
     with app.test_client() as client:
         yield client
 
@@ -92,13 +92,13 @@ class TestAPI:
 
     def test_health_check(self, client):
         """Test GET /health endpoint."""
-        response = client.get('/health')
+        response = client.get("/health")
         assert response.status_code == 200
         data = response.get_json()
-        assert data['status'] == 'healthy'
-        assert 'version' in data
-        assert 'config' in data
-        assert data['config']['min_signal_length'] == 50
+        assert data["status"] == "healthy"
+        assert "version" in data
+        assert "config" in data
+        assert data["config"]["min_signal_length"] == 50
 
     def test_predict_valid_request(self, client):
         """Test POST /predict with valid signal."""
@@ -107,63 +107,55 @@ class TestAPI:
         duration = 5
         t = np.arange(0, duration, 1 / fs)
         signal = (0.5 + 0.1 * np.sin(2 * np.pi * 1 * t)).tolist()
-        
-        response = client.post('/predict', json={'signal': signal})
+
+        response = client.post("/predict", json={"signal": signal})
         assert response.status_code == 200
         data = response.get_json()
-        assert 'bpm' in data
+        assert "bpm" in data
 
     def test_predict_short_signal(self, client):
         """Test POST /predict with signal too short."""
-        response = client.post('/predict', json={'signal': [0.5] * 25})
+        response = client.post("/predict", json={"signal": [0.5] * 25})
         assert response.status_code == 400
         data = response.get_json()
-        assert 'error' in data
+        assert "error" in data
 
     def test_predict_missing_signal(self, client):
         """Test POST /predict with missing signal field."""
-        response = client.post('/predict', json={})
+        response = client.post("/predict", json={})
         assert response.status_code == 400
         data = response.get_json()
-        assert 'error' in data
+        assert "error" in data
 
     def test_predict_invalid_json(self, client):
         """Test POST /predict with invalid JSON."""
-        response = client.post(
-            '/predict',
-            data='invalid json',
-            content_type='application/json'
-        )
+        response = client.post("/predict", data="invalid json", content_type="application/json")
         assert response.status_code == 400
 
     def test_predict_non_numeric_values(self, client):
         """Test POST /predict with non-numeric signal values."""
-        response = client.post('/predict', json={'signal': ['a', 'b', 'c'] * 20})
+        response = client.post("/predict", json={"signal": ["a", "b", "c"] * 20})
         assert response.status_code == 400
         data = response.get_json()
-        assert 'error' in data
+        assert "error" in data
 
     def test_predict_invalid_content_type(self, client):
         """Test POST /predict with invalid content type."""
-        response = client.post(
-            '/predict',
-            data='{"signal": [0.5]}',
-            content_type='text/plain'
-        )
+        response = client.post("/predict", data='{"signal": [0.5]}', content_type="text/plain")
         assert response.status_code == 400
 
     def test_security_headers(self, client):
         """Test that security headers are present."""
-        response = client.get('/health')
-        assert 'X-Content-Type-Options' in response.headers
-        assert response.headers['X-Content-Type-Options'] == 'nosniff'
-        assert 'X-Frame-Options' in response.headers
-        assert response.headers['X-Frame-Options'] == 'DENY'
+        response = client.get("/health")
+        assert "X-Content-Type-Options" in response.headers
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert "X-Frame-Options" in response.headers
+        assert response.headers["X-Frame-Options"] == "DENY"
 
     def test_cors_headers(self, client):
         """Test CORS headers are present."""
-        response = client.get('/health')
-        assert 'Access-Control-Allow-Origin' in response.headers or response.status_code == 200
+        response = client.get("/health")
+        assert "Access-Control-Allow-Origin" in response.headers or response.status_code == 200
 
 
 class TestSignalProcessing:
@@ -198,5 +190,5 @@ class TestSignalProcessing:
         assert result is None or (40 <= result <= 200)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

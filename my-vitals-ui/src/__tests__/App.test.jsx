@@ -2,9 +2,13 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import App from '../App';
 
-jest.mock('../components/VideoFeed', () => function MockVideoFeed() {
-  return <div data-testid="video-feed" />;
-});
+jest.mock(
+  '../components/VideoFeed',
+  () =>
+    function MockVideoFeed() {
+      return <div data-testid="video-feed" />;
+    }
+);
 
 jest.mock('../hooks/useRPPG', () => ({
   __esModule: true,
