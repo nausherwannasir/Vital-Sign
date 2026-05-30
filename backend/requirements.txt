@@ -2,3 +2,4 @@ Flask==3.0.0
 numpy>=1.26,<1.27
 scipy>=1.11,<1.12
 Flask-CORS==4.0.0
+python-dotenv>=1.0.0,<1.1

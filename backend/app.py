@@ -12,21 +12,32 @@ from scipy.signal import detrend, butter, filtfilt, welch
 import os
 import logging
 from typing import Optional, List
+from config import get_config
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get configuration based on environment
+config = get_config()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=config.LOG_LEVEL,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="../frontend")
-CORS(app)  # Enable CORS for React development server
+CORS(app, origins=config.CORS_ORIGINS)  # Enable CORS with configurable origins
 
-# Configuration constants
-MIN_SIGNAL_LENGTH = 50  # Minimum required signal samples
-DEFAULT_SAMPLING_RATE = 30  # Default sampling frequency (Hz)
-MIN_HR_FREQ = 0.8  # Minimum heart rate frequency (Hz) - 48 BPM
-MAX_HR_FREQ = 3.0  # Maximum heart rate frequency (Hz) - 180 BPM
-FILTER_ORDER = 4   # Butterworth filter order
-WELCH_SEGMENT_SIZE = 128  # Segment size for Welch's method
+# Use configuration values
+MIN_SIGNAL_LENGTH = config.MIN_SIGNAL_LENGTH
+DEFAULT_SAMPLING_RATE = config.SAMPLING_RATE
+MIN_HR_FREQ = config.MIN_HR_FREQ
+MAX_HR_FREQ = config.MAX_HR_FREQ
+FILTER_ORDER = config.FILTER_ORDER
+WELCH_SEGMENT_SIZE = config.WELCH_SEGMENT_SIZE
 
 def compute_bpm(signal: List[float], fs: int = DEFAULT_SAMPLING_RATE) -> Optional[float]:
     """
@@ -216,12 +227,13 @@ def add_security_headers(response):
 
 if __name__ == "__main__":
     logger.info("Starting Heart Rate Monitor server...")
-    logger.info(f"Server will be available at http://localhost:3000")
+    logger.info(f"Server will be available at http://{config.HOST}:{config.PORT}")
     logger.info(f"Configuration: {MIN_SIGNAL_LENGTH} min samples, {DEFAULT_SAMPLING_RATE}Hz sampling")
-    
+    logger.info(f"Environment: {config.FLASK_ENV}")
+
     app.run(
-        host='0.0.0.0', 
-        port=3000,
-        debug=False,  # Set to False for production
+        host=config.HOST,
+        port=config.PORT,
+        debug=config.DEBUG,
         threaded=True  # Enable multi-threading for better performance
     )
