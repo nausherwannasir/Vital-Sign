@@ -20,7 +20,7 @@ describe('Dashboard Component', () => {
     expect(screen.getByText(/heart rate/i)).toBeInTheDocument();
     expect(screen.getByText(/72/)).toBeInTheDocument();
     expect(screen.getByText(/good signal/i)).toBeInTheDocument();
-    expect(screen.getByText(/good lighting/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Good lighting$/i)).toBeInTheDocument();
   });
 
   it('shows placeholder heart rate when no bpm is available', () => {
