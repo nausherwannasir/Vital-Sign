@@ -39,7 +39,7 @@ export default function useRPPG() {
      * Calculate signal quality metrics
      */
     const calculateSignalQuality = useCallback((signal) => {
-        if (signal.length < 50) return 0;
+        if (signal.length < 20) return 0;
         
         const std = Math.sqrt(
             signal.reduce((sum, val) => sum + val * val, 0) / signal.length
@@ -110,7 +110,7 @@ export default function useRPPG() {
             
             if (signalStd < CONFIG.MIN_SIGNAL_STD) {
                 setBpm(null);
-                setQuality('Signal too weak - improve lighting');
+                setQuality('Signal too weak - check lighting and remain still');
                 return;
             }
             
