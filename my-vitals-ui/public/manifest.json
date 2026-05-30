@@ -1,0 +1,37 @@
+{
+  "name": "Vital-Sign - Contactless Heart Rate Monitor",
+  "short_name": "Vital-Sign",
+  "description": "Real-time contactless heart rate monitoring using webcam and remote photoplethysmography",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#FF6B6B",
+  "background_color": "#ffffff",
+  "categories": [
+    "health",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Start Monitoring",
+      "short_name": "Monitor",
+      "description": "Start heart rate monitoring",
+      "url": "/?mode=monitor"
+    }
+  ]
+}

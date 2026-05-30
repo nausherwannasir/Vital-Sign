@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Contactless heart rate monitor using webcam" />
+  <meta name="theme-color" content="#FF6B6B" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Vital-Sign" />
+  
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/icon-192x192.png" />
+  
+  <title>Vital-Sign - Heart Rate Monitor</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/index.jsx"></script>
+  
+  <script>
+    // Register Service Worker for PWA support
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker
+          .register('/service-worker.js')
+          .then((registration) => {
+            console.log('Service Worker registered:', registration);
+            
+            // Check for updates periodically
+            setInterval(() => {
+              registration.update();
+            }, 60000); // Check every minute
+          })
+          .catch((error) => {
+            console.log('Service Worker registration failed:', error);
+          });
+      });
+    }
+
+    // Request periodic background sync when online
+    if ('periodicSync' in ServiceWorkerRegistration.prototype) {
+      navigator.serviceWorker.ready.then(async (registration) => {
+        try {
+          await registration.periodicSync.register('update-check', {
+            minInterval: 24 * 60 * 60 * 1000, // Once per day
+          });
+        } catch (error) {
+          console.log('Periodic sync registration failed:', error);
+        }
+      });
+    }
+  </script>
+</body>
+</html>

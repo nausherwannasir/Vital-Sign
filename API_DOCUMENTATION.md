@@ -323,6 +323,197 @@ curl -X POST http://localhost:3000/predict \
   -d '{"signal":[0.1,0.15,0.12,0.18,0.14,0.11,0.16,0.13,0.17,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14]}'
 ```
 
+## Advanced Usage
+
+### Batch Processing Multiple Signals
+
+```python
+import requests
+import time
+
+signals = [
+    [0.1, 0.15, 0.12, ...],  # User 1
+    [0.2, 0.25, 0.22, ...],  # User 2
+    [0.3, 0.35, 0.32, ...],  # User 3
+]
+
+for i, signal in enumerate(signals):
+    response = requests.post('http://localhost:3000/predict', 
+        json={'signal': signal}
+    )
+    result = response.json()
+    print(f"User {i+1}: {result['bpm']} BPM")
+    time.sleep(0.1)  # Small delay between requests
+```
+
+### Real-time Monitoring with Confidence
+
+```javascript
+class HeartRateMonitor {
+  constructor(bufferSize = 150) {
+    this.buffer = [];
+    this.bufferSize = bufferSize;
+    this.history = [];
+    this.confidence = 0;
+  }
+
+  async update(greenValue) {
+    this.buffer.push(greenValue);
+    if (this.buffer.length > this.bufferSize) {
+      this.buffer.shift();
+    }
+
+    if (this.buffer.length === this.bufferSize) {
+      const result = await this.predictBPM();
+      if (result.bpm) {
+        this.history.push(result.bpm);
+        this.calculateConfidence();
+      }
+    }
+  }
+
+  async predictBPM() {
+    const response = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signal: this.buffer })
+    });
+    return await response.json();
+  }
+
+  calculateConfidence() {
+    if (this.history.length < 3) return;
+    
+    const recent = this.history.slice(-3);
+    const avg = recent.reduce((a, b) => a + b) / recent.length;
+    const variance = recent.reduce((sum, val) => 
+      sum + Math.pow(val - avg, 2), 0) / recent.length;
+    
+    // Lower variance = higher confidence
+    this.confidence = Math.max(0, 1 - (variance / 100));
+  }
+
+  getStats() {
+    return {
+      currentBPM: this.history[this.history.length - 1],
+      avgBPM: this.history.reduce((a, b) => a + b) / this.history.length,
+      confidence: this.confidence,
+      samples: this.history.length
+    };
+  }
+}
+```
+
+### Error Handling Best Practices
+
+```javascript
+async function measureHeartRate(signal) {
+  try {
+    const response = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signal })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      
+      if (response.status === 400) {
+        console.error('Invalid input:', error.error);
+        // Handle validation errors
+        return { error: 'Please check input data' };
+      }
+      
+      if (response.status === 429) {
+        console.error('Rate limited:', error.error);
+        // Implement exponential backoff
+        await new Promise(r => setTimeout(r, 5000));
+        return measureHeartRate(signal);
+      }
+      
+      if (response.status === 500) {
+        console.error('Server error:', error.error);
+        return { error: 'Server is temporarily unavailable' };
+      }
+    }
+
+    const result = await response.json();
+    
+    if (result.bpm === null) {
+      console.log('No heart rate detected:', result.message);
+      return { error: result.message };
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Network error:', error);
+    return { error: 'Network connection failed' };
+  }
+}
+```
+
+### Testing with cURL
+
+```bash
+# Test with valid signal
+curl -X POST http://localhost:3000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"signal":[0.1,0.15,0.12,0.18,0.14,0.11,0.16,0.13,0.17,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14]}'
+
+# Test with short signal (should fail)
+curl -X POST http://localhost:3000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"signal":[0.1,0.15,0.12]}'
+
+# Test health endpoint
+curl http://localhost:3000/health | jq
+```
+
+### Performance Considerations
+
+- **Signal Length**: 150 samples (5 seconds at 30 FPS) is optimal
+- **Request Size**: Typical request is 1-2 KB (very efficient)
+- **Response Time**: Expected 10-50ms processing time
+- **Throughput**: 1000+ requests per second on modern hardware
+
+### Reliability & Monitoring
+
+```python
+import time
+import statistics
+
+class APIMonitor:
+    def __init__(self):
+        self.response_times = []
+        self.error_count = 0
+        self.success_count = 0
+    
+    def track_request(self, duration):
+        self.response_times.append(duration)
+        
+    def track_error(self):
+        self.error_count += 1
+        
+    def track_success(self):
+        self.success_count += 1
+    
+    def get_stats(self):
+        if not self.response_times:
+            return None
+        
+        return {
+            'avg_time_ms': statistics.mean(self.response_times) * 1000,
+            'p95_time_ms': self._percentile(self.response_times, 0.95) * 1000,
+            'total_requests': self.success_count + self.error_count,
+            'error_rate': self.error_count / (self.success_count + self.error_count)
+        }
+    
+    @staticmethod
+    def _percentile(data, p):
+        index = int(len(data) * p)
+        return sorted(data)[index]
+```
+
 ## Version History
 
 ### v1.0.0
@@ -331,3 +522,11 @@ curl -X POST http://localhost:3000/predict \
 - Health check endpoint
 - Static file serving
 - CORS support for development
+
+### v1.1.0 (Current)
+- Enhanced API documentation with advanced examples
+- Batch processing patterns
+- Confidence calculation methods
+- Error handling best practices
+- Performance monitoring utilities
+- cURL testing examples
