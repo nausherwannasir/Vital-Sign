@@ -82,25 +82,33 @@ def compute_bpm(signal: List[float], fs: int = DEFAULT_SAMPLING_RATE) -> Optiona
         b, a = butter(FILTER_ORDER, [low_cutoff, high_cutoff], btype='band')
         sig_filtered = filtfilt(b, a, sig)
         
-        # Compute power spectral density using Welch's method
+        # Compute power spectral density using Welch's method.
+        # Use the full signal length as nperseg to maximise frequency resolution
+        # (resolution = fs / nperseg). With nperseg = N, every harmonic of
+        # fs/N falls on an exact bin, which is essential for short signals.
         frequencies, power_spectrum = welch(
-            sig_filtered, 
-            fs, 
-            nperseg=min(WELCH_SEGMENT_SIZE, len(sig_filtered) // 4)
+            sig_filtered,
+            fs,
+            nperseg=len(sig_filtered)
         )
-        
+
         # Find peak in physiological frequency range
         freq_mask = np.logical_and(frequencies >= MIN_HR_FREQ, frequencies <= MAX_HR_FREQ)
-        
+
         if not np.any(freq_mask):
             logger.warning("No frequencies in physiological range")
             return None
-        
+
         # Get the frequency with maximum power in the valid range
         valid_frequencies = frequencies[freq_mask]
         valid_power = power_spectrum[freq_mask]
-        
+
         if len(valid_power) == 0:
+            return None
+
+        # Reject signals with negligible power (constant / zero input)
+        if np.max(valid_power) < 1e-15:
+            logger.warning("No significant power in physiological frequency range")
             return None
             
         peak_freq = valid_frequencies[np.argmax(valid_power)]
@@ -130,8 +138,8 @@ def predict():
             logger.warning("Non-JSON request received")
             return jsonify({'error': 'Content-Type must be application/json'}), 400
         
-        # Parse JSON data
-        data = request.get_json()
+        # Parse JSON data (silent=True returns None instead of raising on bad JSON)
+        data = request.get_json(silent=True)
         if data is None:
             return jsonify({'error': 'Invalid JSON payload'}), 400
         
