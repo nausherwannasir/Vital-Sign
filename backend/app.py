@@ -36,7 +36,6 @@ DEFAULT_SAMPLING_RATE = config.SAMPLING_RATE
 MIN_HR_FREQ = config.MIN_HR_FREQ
 MAX_HR_FREQ = config.MAX_HR_FREQ
 FILTER_ORDER = config.FILTER_ORDER
-WELCH_SEGMENT_SIZE = config.WELCH_SEGMENT_SIZE
 
 
 def compute_bpm(signal: List[float], fs: int = DEFAULT_SAMPLING_RATE) -> Optional[float]:

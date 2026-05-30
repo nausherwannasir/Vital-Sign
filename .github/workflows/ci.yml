@@ -12,8 +12,8 @@ jobs:
     name: Backend Tests & Quality (${{ matrix.python-version }})
     strategy:
       matrix:
-        # Python 3.8 dropped: numpy>=1.26 and scipy>=1.11 require Python 3.9+
-        python-version: ["3.9", "3.10", "3.11"]
+        # numpy>=2.0 and scipy>=1.15 require Python 3.10+
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -68,14 +68,14 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: my-vitals-ui/package-lock.json
 
       - name: Install dependencies
         run: |
           cd my-vitals-ui
-          npm ci
+          npm ci --legacy-peer-deps
 
       - name: Lint with ESLint
         run: |

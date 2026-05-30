@@ -1,8 +1,8 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@plugin "daisyui" {
+  themes: light, dark;
+}
 
-/* custom overrides */
 body {
   @apply bg-base-100 text-base-content;
 }
