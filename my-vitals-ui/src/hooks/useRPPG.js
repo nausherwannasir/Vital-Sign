@@ -22,7 +22,7 @@ export default function useRPPG() {
         BUFFER_SIZE: 150,
         UPDATE_INTERVAL: 1000,
         MIN_BRIGHTNESS: 0.2,
-        MIN_SIGNAL_STD: 0.001,
+        MIN_SIGNAL_STD: 0.0002,
         API_TIMEOUT: 5000
     };
     
@@ -64,20 +64,21 @@ export default function useRPPG() {
         
         // Update signal strength indicator
         const currentSignal = greenBufferRef.current.slice(-30); // Last 1 second
-        const strength = calculateSignalQuality(currentSignal);
+        const detrendedSignal = detrend(currentSignal);
+        const strength = calculateSignalQuality(detrendedSignal);
         setSignalStrength(strength);
         
         // Update quality based on buffer size and signal strength
         if (greenBufferRef.current.length < CONFIG.BUFFER_SIZE) {
             setQuality(`Collecting data... ${greenBufferRef.current.length}/${CONFIG.BUFFER_SIZE}`);
-        } else if (strength < 10) {
+        } else if (strength < 5) {
             setQuality('Weak signal - stay still');
-        } else if (strength < 30) {
+        } else if (strength < 20) {
             setQuality('Fair signal');
         } else {
             setQuality('Good signal');
         }
-    }, [calculateSignalQuality, CONFIG.BUFFER_SIZE, CONFIG.MIN_BRIGHTNESS]);
+    }, [calculateSignalQuality, detrend, CONFIG.BUFFER_SIZE, CONFIG.MIN_BRIGHTNESS]);
     
     /**
      * Compute heart rate from current signal buffer
@@ -109,7 +110,7 @@ export default function useRPPG() {
             
             if (signalStd < CONFIG.MIN_SIGNAL_STD) {
                 setBpm(null);
-                setQuality('Motion detected - please stay still');
+                setQuality('Signal too weak - improve lighting');
                 return;
             }
             
