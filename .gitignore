@@ -1,14 +1,42 @@
 # Python
 backend/env/
+backend/venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.eggs/
 
 # Node
 my-vitals-ui/node_modules/
 my-vitals-ui/dist/
+my-vitals-ui/build/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
 # Artifacts
 *.h5
 saved_model/
 tfjs_model/
+*.zip
+*.tar.gz
