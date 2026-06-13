@@ -147,6 +147,10 @@ def predict():
         if not isinstance(signal, list):
             return jsonify({"error": "Signal must be an array"}), 400
 
+        MAX_SIGNAL_LENGTH = 10000  # ~5.5 min at 30 Hz; prevents memory exhaustion
+        if len(signal) > MAX_SIGNAL_LENGTH:
+            return jsonify({"error": f"Signal too long. Maximum {MAX_SIGNAL_LENGTH} samples allowed"}), 400
+
         if len(signal) < MIN_SIGNAL_LENGTH:
             logger.info(f"Signal too short: {len(signal)} samples")
             return (
