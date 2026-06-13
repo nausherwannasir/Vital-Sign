@@ -149,7 +149,10 @@ def predict():
 
         MAX_SIGNAL_LENGTH = 10000  # ~5.5 min at 30 Hz; prevents memory exhaustion
         if len(signal) > MAX_SIGNAL_LENGTH:
-            return jsonify({"error": f"Signal too long. Maximum {MAX_SIGNAL_LENGTH} samples allowed"}), 400
+            return (
+                jsonify({"error": f"Signal too long. Maximum {MAX_SIGNAL_LENGTH} samples allowed"}),
+                400,
+            )
 
         if len(signal) < MIN_SIGNAL_LENGTH:
             logger.info(f"Signal too short: {len(signal)} samples")
