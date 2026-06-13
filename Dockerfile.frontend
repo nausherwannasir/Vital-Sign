@@ -6,7 +6,7 @@ WORKDIR /app
 COPY my-vitals-ui/package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # Copy application code
 COPY my-vitals-ui/ .
