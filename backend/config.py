@@ -49,6 +49,8 @@ class ProductionConfig(Config):
 
     DEBUG = False
     LOG_LEVEL = "INFO"
+    # Require an explicit allow-list; "*" must not be the production default
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else []
 
 
 class TestingConfig(Config):

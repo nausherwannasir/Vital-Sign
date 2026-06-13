@@ -98,6 +98,8 @@ export default function VideoFeed({ className, onFrameData }) {
 
     // Cleanup function
     return () => {
+      camera.stop();
+      faceMesh.close();
       if (video.srcObject) {
         video.srcObject.getTracks().forEach((track) => track.stop());
       }
