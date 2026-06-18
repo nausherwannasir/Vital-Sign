@@ -1,262 +1,222 @@
 """
-Contactless Heart Rate Monitor Backend
+Contactless Heart Rate Monitor — backend API.
 
-A Flask server that provides heart rate analysis using remote photoplethysmography (rPPG).
-The server processes green channel signals from webcam video to estimate heart rate.
+A small Flask service that estimates heart rate from an rPPG signal (the average
+green-channel value of facial skin, sampled per video frame). The browser does
+the camera work and face tracking; this server does the signal processing.
 """
 
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-import numpy as np
-from scipy.signal import detrend, butter, filtfilt, welch
 import os
 import logging
-from typing import Optional, List
-from config import get_config
+
+import numpy as np
+from scipy.signal import detrend, butter, filtfilt, welch
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+from config import get_config
 
-# Get configuration based on environment
+load_dotenv()
 config = get_config()
 
-# Configure logging
 logging.basicConfig(
     level=config.LOG_LEVEL, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder="../frontend")
-CORS(app, origins=config.CORS_ORIGINS)  # Enable CORS with configurable origins
+# The frontend is served from the built React app. Override with FRONTEND_DIST
+# (used by Docker); default is the local Vite build output.
+FRONTEND_DIST = os.getenv(
+    "FRONTEND_DIST",
+    os.path.join(os.path.dirname(__file__), "..", "my-vitals-ui", "dist"),
+)
 
-# Use configuration values
-MIN_SIGNAL_LENGTH = config.MIN_SIGNAL_LENGTH
-DEFAULT_SAMPLING_RATE = config.SAMPLING_RATE
-MIN_HR_FREQ = config.MIN_HR_FREQ
-MAX_HR_FREQ = config.MAX_HR_FREQ
-FILTER_ORDER = config.FILTER_ORDER
+app = Flask(__name__, static_folder=None)
+CORS(app, origins=config.CORS_ORIGINS)
+
+# Plausible camera frame rates. Anything outside this is almost certainly a
+# client bug, and a wrong sampling rate scales the BPM linearly.
+MIN_FS = 5.0
+MAX_FS = 120.0
+
+# Upper bound on /predict input length (~5.5 min at 30 Hz). Caps memory use
+# from unbounded client payloads.
+MAX_SIGNAL_LENGTH = 10000
 
 
-def compute_bpm(signal: List[float], fs: int = DEFAULT_SAMPLING_RATE) -> Optional[float]:
-    """
-    Compute heart rate (BPM) from a photoplethysmographic signal.
-
-    This function implements a signal processing pipeline to extract heart rate
-    from a time-series signal obtained from facial video analysis.
+def compute_bpm(signal, fs=config.SAMPLING_RATE):
+    """Estimate heart rate (BPM) from an rPPG signal.
 
     Args:
-        signal (List[float]): Array of normalized green channel values
-        fs (int, optional): Sampling frequency in Hz. Defaults to 30.
+        signal: Per-frame green-channel values.
+        fs: Sampling rate in Hz (frames per second the signal was captured at).
 
     Returns:
-        Optional[float]: Heart rate in beats per minute, or None if no valid peak found
+        Heart rate in BPM, or None if no reliable pulse is found.
 
     Raises:
-        ValueError: If signal is too short or sampling rate is invalid
+        ValueError: If ``fs`` is not positive.
     """
-    try:
-        # Input validation
-        if len(signal) < MIN_SIGNAL_LENGTH:
-            logger.warning(f"Signal too short: {len(signal)} < {MIN_SIGNAL_LENGTH}")
-            return None
+    if fs <= 0:
+        raise ValueError("Sampling frequency must be positive")
 
-        if fs <= 0:
-            raise ValueError("Sampling frequency must be positive")
-
-        # Convert to numpy array and remove DC component
-        sig = np.array(signal, dtype=np.float64)
-        sig = detrend(sig)
-
-        # Design and apply bandpass filter (0.8-3.0 Hz for heart rate)
-        nyquist = fs / 2
-        low_cutoff = MIN_HR_FREQ / nyquist
-        high_cutoff = MAX_HR_FREQ / nyquist
-
-        # Ensure cutoff frequencies are valid
-        if high_cutoff >= 1.0:
-            high_cutoff = 0.99
-            logger.warning("High cutoff frequency adjusted to prevent aliasing")
-
-        b, a = butter(FILTER_ORDER, [low_cutoff, high_cutoff], btype="band")
-        sig_filtered = filtfilt(b, a, sig)
-
-        # Compute power spectral density using Welch's method.
-        # Use the full signal length as nperseg to maximise frequency resolution
-        # (resolution = fs / nperseg). With nperseg = N, every harmonic of
-        # fs/N falls on an exact bin, which is essential for short signals.
-        frequencies, power_spectrum = welch(sig_filtered, fs, nperseg=len(sig_filtered))
-
-        # Find peak in physiological frequency range
-        freq_mask = np.logical_and(frequencies >= MIN_HR_FREQ, frequencies <= MAX_HR_FREQ)
-
-        if not np.any(freq_mask):
-            logger.warning("No frequencies in physiological range")
-            return None
-
-        # Get the frequency with maximum power in the valid range
-        valid_frequencies = frequencies[freq_mask]
-        valid_power = power_spectrum[freq_mask]
-
-        if len(valid_power) == 0:
-            return None
-
-        # Reject signals with negligible power (constant / zero input)
-        if np.max(valid_power) < 1e-15:
-            logger.warning("No significant power in physiological frequency range")
-            return None
-
-        peak_freq = valid_frequencies[np.argmax(valid_power)]
-        bpm = float(peak_freq * 60)
-
-        logger.info(f"Computed BPM: {bpm:.1f}")
-        return bpm
-
-    except Exception as e:
-        logger.error(f"Error computing BPM: {str(e)}")
+    if len(signal) < config.MIN_SIGNAL_LENGTH:
+        logger.warning("Signal too short: %d < %d", len(signal), config.MIN_SIGNAL_LENGTH)
         return None
+
+    sig = detrend(np.asarray(signal, dtype=np.float64))
+
+    # Band-pass to the physiological heart-rate range (0.8–3.0 Hz ≈ 48–180 BPM).
+    nyquist = fs / 2
+    low = config.MIN_HR_FREQ / nyquist
+    high = min(config.MAX_HR_FREQ / nyquist, 0.99)
+    if low <= 0 or low >= high:
+        logger.warning("Invalid filter band for fs=%.1f Hz", fs)
+        return None
+    b, a = butter(config.FILTER_ORDER, [low, high], btype="band")
+    sig = filtfilt(b, a, sig)
+
+    # Power spectrum via Welch. We zero-pad the FFT (nfft >> nperseg) so the peak
+    # is resolved to a fraction of a BPM. Without padding, the bin spacing is
+    # fs/N — e.g. 0.2 Hz (12 BPM!) for a 150-sample, 30 Hz buffer, which would
+    # quantise every reading to a multiple of 12 BPM.
+    nperseg = len(sig)
+    nfft = max(nperseg, config.FFT_LENGTH)
+    freqs, psd = welch(sig, fs, nperseg=nperseg, nfft=nfft)
+
+    band = (freqs >= config.MIN_HR_FREQ) & (freqs <= config.MAX_HR_FREQ)
+    if not np.any(band):
+        return None
+    band_freqs, band_psd = freqs[band], psd[band]
+
+    # Reject flat / silent signals (constant or zero input).
+    if band_psd.max() < config.MIN_PEAK_POWER:
+        logger.info("No significant power in heart-rate band")
+        return None
+
+    peak_freq = _interpolate_peak(band_freqs, band_psd)
+    bpm = float(peak_freq * 60)
+    logger.info("Computed BPM: %.1f (fs=%.1f Hz)", bpm, fs)
+    return bpm
+
+
+def _interpolate_peak(freqs, psd):
+    """Refine the spectral peak to sub-bin accuracy via parabolic interpolation."""
+    k = int(np.argmax(psd))
+    if 0 < k < len(psd) - 1:
+        y0, y1, y2 = psd[k - 1], psd[k], psd[k + 1]
+        denom = y0 - 2 * y1 + y2
+        if denom != 0:
+            offset = 0.5 * (y0 - y2) / denom
+            return freqs[k] + offset * (freqs[1] - freqs[0])
+    return freqs[k]
 
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """
-    Predict heart rate from a photoplethysmographic signal.
+    """Estimate heart rate from a posted rPPG signal.
 
-    Expects JSON payload with 'signal' array containing normalized green channel values.
-    Returns JSON response with BPM value or error message.
-
-    Returns:
-        JSON: {'bpm': float} on success, {'error': str} on failure
+    Body: ``{"signal": [float, ...], "fs": float (optional)}``.
+    Returns ``{"bpm": float}``, or ``{"bpm": null, "message": str}`` when no
+    reliable pulse is detected.
     """
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 400
+
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    signal = data.get("signal")
+    if signal is None:
+        return jsonify({"error": "Missing signal field"}), 400
+    if not isinstance(signal, list):
+        return jsonify({"error": "Signal must be an array"}), 400
+    if len(signal) < config.MIN_SIGNAL_LENGTH:
+        return (
+            jsonify(
+                {
+                    "error": f"Signal too short: need >= {config.MIN_SIGNAL_LENGTH} samples",
+                    "received": len(signal),
+                }
+            ),
+            400,
+        )
+    if len(signal) > MAX_SIGNAL_LENGTH:
+        return (
+            jsonify(
+                {
+                    "error": f"Signal too long: max {MAX_SIGNAL_LENGTH} samples",
+                    "received": len(signal),
+                }
+            ),
+            400,
+        )
     try:
-        # Validate content type
-        if not request.is_json:
-            logger.warning("Non-JSON request received")
-            return jsonify({"error": "Content-Type must be application/json"}), 400
+        signal = [float(x) for x in signal]
+    except (ValueError, TypeError):
+        return jsonify({"error": "Signal values must be numeric"}), 400
 
-        # Parse JSON data (silent=True returns None instead of raising on bad JSON)
-        data = request.get_json(silent=True)
-        if data is None:
-            return jsonify({"error": "Invalid JSON payload"}), 400
+    # Sampling rate is measured client-side from real frame timestamps; the
+    # camera rarely runs at exactly the nominal 30 fps.
+    fs = data.get("fs", config.SAMPLING_RATE)
+    try:
+        fs = float(fs)
+    except (ValueError, TypeError):
+        return jsonify({"error": "fs must be numeric"}), 400
+    if not MIN_FS <= fs <= MAX_FS:
+        return jsonify({"error": f"fs must be between {MIN_FS} and {MAX_FS} Hz"}), 400
 
-        # Validate signal data
-        signal = data.get("signal")
-        if signal is None:
-            return jsonify({"error": "Missing signal field"}), 400
+    try:
+        bpm = compute_bpm(signal, fs=fs)
+    except Exception:  # noqa: BLE001 — never 500 on a math edge case; report no-signal.
+        logger.exception("compute_bpm failed")
+        return jsonify({"bpm": None, "message": "Could not process signal"})
 
-        if not isinstance(signal, list):
-            return jsonify({"error": "Signal must be an array"}), 400
-
-        MAX_SIGNAL_LENGTH = 10000  # ~5.5 min at 30 Hz; prevents memory exhaustion
-        if len(signal) > MAX_SIGNAL_LENGTH:
-            return (
-                jsonify({"error": f"Signal too long. Maximum {MAX_SIGNAL_LENGTH} samples allowed"}),
-                400,
-            )
-
-        if len(signal) < MIN_SIGNAL_LENGTH:
-            logger.info(f"Signal too short: {len(signal)} samples")
-            return (
-                jsonify(
-                    {
-                        "error": f"Signal too short. Minimum {MIN_SIGNAL_LENGTH} samples required",
-                        "received": len(signal),
-                    }
-                ),
-                400,
-            )
-
-        # Validate signal values
-        try:
-            signal_array = [float(x) for x in signal]
-        except (ValueError, TypeError):
-            return jsonify({"error": "Signal values must be numeric"}), 400
-
-        # Compute heart rate
-        bpm = compute_bpm(signal_array, fs=DEFAULT_SAMPLING_RATE)
-
-        if bpm is None:
-            logger.info("No valid heart rate detected")
-            return jsonify({"bpm": None, "message": "No valid heart rate detected"})
-
-        # Validate physiological range
-        if bpm < 40 or bpm > 200:
-            logger.warning(f"BPM outside physiological range: {bpm}")
-            return jsonify(
-                {"bpm": None, "message": f"Detected BPM ({bpm:.1f}) outside physiological range"}
-            )
-
-        return jsonify({"bpm": round(bpm, 1)})
-
-    except Exception as e:
-        logger.error(f"Unexpected error in predict endpoint: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
+    if bpm is None:
+        return jsonify({"bpm": None, "message": "No valid heart rate detected"})
+    if not 40 <= bpm <= 200:
+        return jsonify(
+            {"bpm": None, "message": f"Detected BPM ({bpm:.1f}) outside physiological range"}
+        )
+    return jsonify({"bpm": round(bpm, 1)})
 
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """
-    Health check endpoint for monitoring server status.
-
-    Returns:
-        JSON: Server status and configuration
-    """
+    """Liveness probe with the active signal-processing configuration."""
     return jsonify(
         {
             "status": "healthy",
-            "version": "1.0.0",
             "config": {
-                "min_signal_length": MIN_SIGNAL_LENGTH,
-                "sampling_rate": DEFAULT_SAMPLING_RATE,
-                "frequency_range": [MIN_HR_FREQ, MAX_HR_FREQ],
+                "min_signal_length": config.MIN_SIGNAL_LENGTH,
+                "default_sampling_rate": config.SAMPLING_RATE,
+                "frequency_range_hz": [config.MIN_HR_FREQ, config.MAX_HR_FREQ],
             },
         }
     )
 
 
-# Static files for classic front-end
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
-def static_proxy(path):
-    """
-    Serve static files from the frontend directory.
-
-    Args:
-        path (str): Requested file path
-
-    Returns:
-        Static file or 404 if not found
-    """
-    try:
-        return send_from_directory(app.static_folder, path)
-    except FileNotFoundError:
-        logger.warning(f"File not found: {path}")
-        return jsonify({"error": "File not found"}), 404
+def serve_frontend(path):
+    """Serve the built React SPA, falling back to index.html for client routes."""
+    if os.path.isfile(os.path.join(FRONTEND_DIST, path)):
+        return send_from_directory(FRONTEND_DIST, path)
+    if os.path.isfile(os.path.join(FRONTEND_DIST, "index.html")):
+        return send_from_directory(FRONTEND_DIST, "index.html")
+    return jsonify({"error": "Frontend not built. Run `npm run build` in my-vitals-ui."}), 404
 
 
-# Add security headers
 @app.after_request
 def add_security_headers(response):
-    """Add security headers to all responses."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    # Allow camera access for localhost and HTTPS
     response.headers["Permissions-Policy"] = "camera=(self)"
     return response
 
 
 if __name__ == "__main__":
-    logger.info("Starting Heart Rate Monitor server...")
-    logger.info(f"Server will be available at http://{config.HOST}:{config.PORT}")
-    logger.info(
-        f"Configuration: {MIN_SIGNAL_LENGTH} min samples, {DEFAULT_SAMPLING_RATE}Hz sampling"
-    )
-    logger.info(f"Environment: {config.FLASK_ENV}")
-
-    app.run(
-        host=config.HOST,
-        port=config.PORT,
-        debug=config.DEBUG,
-        threaded=True,  # Enable multi-threading for better performance
-    )
+    logger.info("Starting Heart Rate Monitor on http://%s:%s", config.HOST, config.PORT)
+    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, threaded=True)
