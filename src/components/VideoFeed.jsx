@@ -35,9 +35,10 @@ export default function VideoFeed({ className, onFrameData }) {
       ROI_SCALE: 0.1,
     };
 
-    // Initialize face mesh
+    // Initialize face mesh. Assets are bundled locally (see vite.config.js) and
+    // served from our own origin, so the app has no runtime CDN dependency.
     const faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      locateFile: (file) => `/mediapipe/face_mesh/${file}`,
     });
 
     faceMesh.setOptions({
