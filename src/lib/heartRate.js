@@ -1,0 +1,196 @@
+/**
+ * In-browser heart-rate estimation from an rPPG signal.
+ *
+ * This replaces the former Flask `/predict` endpoint: the pulse signal never
+ * leaves the device. The pipeline mirrors the original server-side one —
+ * detrend, restrict to the physiological band, find the spectral peak, refine
+ * it to sub-bin accuracy — but uses a direct band-limited DFT instead of an
+ * FFT + Butterworth filter, so the frequency resolution is set explicitly and
+ * no DSP library is needed.
+ */
+
+export const MIN_SIGNAL_LENGTH = 50;
+export const MIN_HR_FREQ = 0.8; // 48 BPM
+export const MAX_HR_FREQ = 3.0; // 180 BPM
+const MIN_BPM = 40;
+const MAX_BPM = 200;
+const FREQ_STEP = 0.0025; // Hz (~0.15 BPM grid resolution)
+const FLAT_SIGNAL_STD = 1e-7; // reject constant / silent input
+const EDGE_MARGIN = 5; // grid points scanned past the band so edges have neighbours
+
+/** Remove the least-squares linear trend from a signal. */
+function linearDetrend(signal) {
+  const n = signal.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXX = 0;
+  let sumXY = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += signal[i];
+    sumXX += i * i;
+    sumXY += i * signal[i];
+  }
+  const denom = n * sumXX - sumX * sumX;
+  const slope = denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return signal.map((v, i) => v - (slope * i + intercept));
+}
+
+/** Standard deviation of a zero-trend signal (used to reject flat input). */
+function std(signal) {
+  const n = signal.length;
+  let sumSq = 0;
+  for (let i = 0; i < n; i++) sumSq += signal[i] * signal[i];
+  return Math.sqrt(sumSq / n);
+}
+
+/**
+ * POS (Plane-Orthogonal-to-Skin, Wang et al. 2017) pulse extraction.
+ *
+ * Combines the R, G and B channel time-series into a single pulse signal that
+ * is robust to motion and lighting: a brightness change shared equally across
+ * channels (the dominant artifact) projects to zero, while the chromatic pulse
+ * survives. Much steadier than using the green channel alone.
+ *
+ * @param {number[]} r - per-frame mean red
+ * @param {number[]} g - per-frame mean green
+ * @param {number[]} b - per-frame mean blue
+ * @returns {number[]} pulse signal (same length), ready for computeBpm
+ */
+export function posPulse(r, g, b) {
+  const n = Math.min(r.length, g.length, b.length);
+  if (n === 0) return [];
+
+  const mean = (arr) => {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += arr[i];
+    return s / n || 1; // avoid divide-by-zero on a dark/empty channel
+  };
+  const mr = mean(r);
+  const mg = mean(g);
+  const mb = mean(b);
+
+  // Temporally normalise each channel, then project onto the two POS planes.
+  const s1 = new Array(n);
+  const s2 = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const rn = r[i] / mr;
+    const gn = g[i] / mg;
+    const bn = b[i] / mb;
+    s1[i] = gn - bn;
+    s2[i] = gn + bn - 2 * rn;
+  }
+
+  const sd = (arr) => {
+    let m = 0;
+    for (let i = 0; i < n; i++) m += arr[i];
+    m /= n;
+    let v = 0;
+    for (let i = 0; i < n; i++) v += (arr[i] - m) * (arr[i] - m);
+    return Math.sqrt(v / n);
+  };
+  const sd2 = sd(s2);
+  const alpha = sd2 === 0 ? 0 : sd(s1) / sd2;
+
+  const pulse = new Array(n);
+  for (let i = 0; i < n; i++) pulse[i] = s1[i] + alpha * s2[i];
+  return pulse;
+}
+
+const CONFIDENCE_BW = 0.15; // Hz window around the peak used for the confidence ratio
+
+/**
+ * Analyse a 1-D rPPG signal for its dominant pulse frequency and a confidence.
+ *
+ * @param {number[]} signal - per-frame pulse samples
+ * @param {number} fs - sampling rate in Hz (measured camera frame rate)
+ * @returns {{bpm: number|null, confidence: number}} BPM (null if unreliable)
+ *   and a 0-1 confidence — the share of in-band energy concentrated at the peak.
+ */
+export function analyzePulse(signal, fs) {
+  if (!(fs > 0)) {
+    throw new Error('Sampling frequency must be positive');
+  }
+  const none = { bpm: null, confidence: 0 };
+  if (!signal || signal.length < MIN_SIGNAL_LENGTH) {
+    return none;
+  }
+
+  const detrended = linearDetrend(Array.from(signal, Number));
+  if (std(detrended) < FLAT_SIGNAL_STD) {
+    return none;
+  }
+
+  // Hann window to suppress spectral leakage from the finite buffer.
+  const n = detrended.length;
+  const windowed = detrended.map((v, i) => v * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1))));
+
+  // Direct DFT power on a fine grid across (a little past) the HR band.
+  const fStart = MIN_HR_FREQ - EDGE_MARGIN * FREQ_STEP;
+  const fEnd = MAX_HR_FREQ + EDGE_MARGIN * FREQ_STEP;
+  const freqs = [];
+  const power = [];
+  for (let f = fStart; f <= fEnd + 1e-9; f += FREQ_STEP) {
+    let re = 0;
+    let im = 0;
+    const w = (2 * Math.PI * f) / fs;
+    for (let i = 0; i < n; i++) {
+      re += windowed[i] * Math.cos(w * i);
+      im += windowed[i] * Math.sin(w * i);
+    }
+    freqs.push(f);
+    power.push(re * re + im * im);
+  }
+
+  // Peak search is restricted to the true band; interpolation may use the
+  // margin points on either side.
+  let peak = -1;
+  let peakPower = -Infinity;
+  for (let k = 0; k < freqs.length; k++) {
+    if (freqs[k] < MIN_HR_FREQ || freqs[k] > MAX_HR_FREQ) continue;
+    if (power[k] > peakPower) {
+      peakPower = power[k];
+      peak = k;
+    }
+  }
+  if (peak < 0) return none;
+
+  // Confidence: fraction of in-band energy concentrated near the peak. A clean
+  // tone packs its energy into one lobe (high); noise spreads it out (low).
+  let totalBand = 0;
+  let nearPeak = 0;
+  for (let k = 0; k < freqs.length; k++) {
+    if (freqs[k] < MIN_HR_FREQ || freqs[k] > MAX_HR_FREQ) continue;
+    totalBand += power[k];
+    if (Math.abs(freqs[k] - freqs[peak]) <= CONFIDENCE_BW) nearPeak += power[k];
+  }
+  const confidence = totalBand > 0 ? Math.min(1, Math.max(0, nearPeak / totalBand)) : 0;
+
+  // Parabolic interpolation refines the peak to sub-grid accuracy.
+  let peakFreq = freqs[peak];
+  if (peak > 0 && peak < power.length - 1) {
+    const y0 = power[peak - 1];
+    const y1 = power[peak];
+    const y2 = power[peak + 1];
+    const denom = y0 - 2 * y1 + y2;
+    if (denom !== 0) {
+      peakFreq += (0.5 * (y0 - y2) * FREQ_STEP) / denom;
+    }
+  }
+
+  const bpm = peakFreq * 60;
+  if (bpm < MIN_BPM || bpm > MAX_BPM) return none;
+  return { bpm: Math.round(bpm * 10) / 10, confidence };
+}
+
+/**
+ * Estimate heart rate (BPM) from a 1-D rPPG signal.
+ *
+ * @param {number[]} signal - per-frame pulse samples
+ * @param {number} fs - sampling rate in Hz (measured camera frame rate)
+ * @returns {number|null} BPM, or null when no reliable pulse is found
+ */
+export function computeBpm(signal, fs) {
+  return analyzePulse(signal, fs).bpm;
+}
