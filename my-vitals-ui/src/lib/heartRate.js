@@ -46,6 +46,59 @@ function std(signal) {
 }
 
 /**
+ * POS (Plane-Orthogonal-to-Skin, Wang et al. 2017) pulse extraction.
+ *
+ * Combines the R, G and B channel time-series into a single pulse signal that
+ * is robust to motion and lighting: a brightness change shared equally across
+ * channels (the dominant artifact) projects to zero, while the chromatic pulse
+ * survives. Much steadier than using the green channel alone.
+ *
+ * @param {number[]} r - per-frame mean red
+ * @param {number[]} g - per-frame mean green
+ * @param {number[]} b - per-frame mean blue
+ * @returns {number[]} pulse signal (same length), ready for computeBpm
+ */
+export function posPulse(r, g, b) {
+  const n = Math.min(r.length, g.length, b.length);
+  if (n === 0) return [];
+
+  const mean = (arr) => {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += arr[i];
+    return s / n || 1; // avoid divide-by-zero on a dark/empty channel
+  };
+  const mr = mean(r);
+  const mg = mean(g);
+  const mb = mean(b);
+
+  // Temporally normalise each channel, then project onto the two POS planes.
+  const s1 = new Array(n);
+  const s2 = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const rn = r[i] / mr;
+    const gn = g[i] / mg;
+    const bn = b[i] / mb;
+    s1[i] = gn - bn;
+    s2[i] = gn + bn - 2 * rn;
+  }
+
+  const sd = (arr) => {
+    let m = 0;
+    for (let i = 0; i < n; i++) m += arr[i];
+    m /= n;
+    let v = 0;
+    for (let i = 0; i < n; i++) v += (arr[i] - m) * (arr[i] - m);
+    return Math.sqrt(v / n);
+  };
+  const sd2 = sd(s2);
+  const alpha = sd2 === 0 ? 0 : sd(s1) / sd2;
+
+  const pulse = new Array(n);
+  for (let i = 0; i < n; i++) pulse[i] = s1[i] + alpha * s2[i];
+  return pulse;
+}
+
+/**
  * Estimate heart rate (BPM) from a 1-D rPPG signal.
  *
  * @param {number[]} signal - per-frame pulse samples
