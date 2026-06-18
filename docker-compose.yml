@@ -1,36 +1,17 @@
-version: "3.8"
-
+# Single service: Flask serves both the API and the built React UI on one origin.
 services:
-  backend:
+  app:
     build:
       context: .
       dockerfile: Dockerfile.backend
     ports:
       - "3000:3000"
     environment:
-      - FLASK_ENV=development
-      - FLASK_DEBUG=False
-      - SAMPLING_RATE=30
-    volumes:
-      - ./backend:/app
+      - FLASK_ENV=production
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "3001:3001"
-    depends_on:
-      - backend
-    environment:
-      - VITE_API_URL=http://localhost:3000
-
-volumes:
-  backend:
-  frontend:
+      start_period: 10s

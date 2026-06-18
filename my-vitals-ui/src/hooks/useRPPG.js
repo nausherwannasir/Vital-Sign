@@ -6,7 +6,20 @@ const CONFIG = {
   MIN_BRIGHTNESS: 0.2,
   MIN_SIGNAL_STD: 0.0002,
   API_TIMEOUT: 5000,
+  DEFAULT_FPS: 30,
 };
+
+/**
+ * Estimate the capture frame rate from frame timestamps (ms).
+ * Falls back to the nominal rate when timestamps are degenerate.
+ */
+function measureSamplingRate(timestamps) {
+  if (timestamps.length < 2) return CONFIG.DEFAULT_FPS;
+  const elapsedSec = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
+  if (elapsedSec <= 0) return CONFIG.DEFAULT_FPS;
+  const fps = (timestamps.length - 1) / elapsedSec;
+  return Math.min(120, Math.max(5, fps));
+}
 
 export default function useRPPG() {
   const [bpm, setBpm] = useState(null);
@@ -17,6 +30,7 @@ export default function useRPPG() {
   const [bufferSize, setBufferSize] = useState(0);
 
   const greenBufferRef = useRef([]);
+  const timestampBufferRef = useRef([]);
   const processingRef = useRef(false);
   const lastUpdateRef = useRef(0);
 
@@ -37,8 +51,10 @@ export default function useRPPG() {
       setLighting(brightness < CONFIG.MIN_BRIGHTNESS ? 'Poor lighting' : 'Good lighting');
 
       greenBufferRef.current.push(greenValue);
+      timestampBufferRef.current.push(performance.now());
       if (greenBufferRef.current.length > CONFIG.BUFFER_SIZE) {
         greenBufferRef.current.shift();
+        timestampBufferRef.current.shift();
       }
       setBufferSize(greenBufferRef.current.length);
 
@@ -83,13 +99,17 @@ export default function useRPPG() {
         return;
       }
 
+      // Measure the real capture rate — the camera rarely runs at exactly
+      // 30 fps, and a wrong fs scales the reported BPM linearly.
+      const fs = measureSamplingRate(timestampBufferRef.current);
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), CONFIG.API_TIMEOUT);
 
       const response = await fetch('/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal }),
+        body: JSON.stringify({ signal, fs }),
         signal: controller.signal,
       });
 
@@ -136,6 +156,7 @@ export default function useRPPG() {
 
   const reset = useCallback(() => {
     greenBufferRef.current = [];
+    timestampBufferRef.current = [];
     setBpm(null);
     setQuality('Initializing...');
     setLighting('Initializing...');
