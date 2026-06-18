@@ -1,5 +1,5 @@
 {
-  "name": "my-vitals-ui",
+  "name": "vital-sign",
   "version": "1.0.0",
   "type": "module",
   "main": "src/index.jsx",
