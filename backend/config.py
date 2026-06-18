@@ -1,6 +1,4 @@
-"""
-Configuration management for Vital-Sign Backend
-"""
+"""Configuration for the Vital-Sign backend, driven by environment variables."""
 
 import os
 from dataclasses import dataclass
@@ -8,7 +6,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
-    """Base configuration"""
+    """Base configuration."""
 
     # Flask
     FLASK_ENV = os.getenv("FLASK_ENV", "development")
@@ -16,37 +14,26 @@ class Config:
     HOST = os.getenv("FLASK_HOST", "0.0.0.0")
     PORT = int(os.getenv("FLASK_PORT", "3000"))
 
-    # Signal Processing
-    SAMPLING_RATE = int(os.getenv("SAMPLING_RATE", "30"))
+    # Signal processing
+    SAMPLING_RATE = int(os.getenv("SAMPLING_RATE", "30"))  # fallback fps if client omits it
     MIN_SIGNAL_LENGTH = int(os.getenv("MIN_SIGNAL_LENGTH", "50"))
-    MIN_HR_FREQ = float(os.getenv("MIN_HR_FREQ", "0.8"))
-    MAX_HR_FREQ = float(os.getenv("MAX_HR_FREQ", "3.0"))
+    MIN_HR_FREQ = float(os.getenv("MIN_HR_FREQ", "0.8"))  # 48 BPM
+    MAX_HR_FREQ = float(os.getenv("MAX_HR_FREQ", "3.0"))  # 180 BPM
     FILTER_ORDER = int(os.getenv("FILTER_ORDER", "4"))
-    WELCH_SEGMENT_SIZE = int(os.getenv("WELCH_SEGMENT_SIZE", "128"))
+    FFT_LENGTH = int(os.getenv("FFT_LENGTH", "4096"))  # zero-padded FFT size; ~0.4 BPM resolution
+    MIN_PEAK_POWER = float(os.getenv("MIN_PEAK_POWER", "1e-15"))  # reject flat/silent signals
 
-    # CORS
+    # CORS / logging
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
-
-    # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-    LOG_FORMAT = os.getenv("LOG_FORMAT", "json")  # json or plain
-
-    # Security
-    MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", "1000000"))  # 1MB
-    RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "False").lower() == "true"
-    RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 
 
 class DevelopmentConfig(Config):
-    """Development configuration"""
-
     DEBUG = True
     LOG_LEVEL = "DEBUG"
 
 
 class ProductionConfig(Config):
-    """Production configuration"""
-
     DEBUG = False
     LOG_LEVEL = "INFO"
     # Require an explicit allow-list; "*" must not be the production default
@@ -54,20 +41,11 @@ class ProductionConfig(Config):
 
 
 class TestingConfig(Config):
-    """Testing configuration"""
-
-    TESTING = True
     DEBUG = True
     LOG_LEVEL = "DEBUG"
 
 
 def get_config():
-    """Get config based on environment"""
+    """Return the config for the current FLASK_ENV."""
     env = os.getenv("FLASK_ENV", "development").lower()
-
-    if env == "production":
-        return ProductionConfig()
-    elif env == "testing":
-        return TestingConfig()
-    else:
-        return DevelopmentConfig()
+    return {"production": ProductionConfig, "testing": TestingConfig}.get(env, DevelopmentConfig)()

@@ -1,532 +1,59 @@
-# Heart Rate Monitor API Documentation
+# API Reference
 
-## Overview
+Base URL: `http://localhost:3000`. No authentication. All bodies are JSON.
 
-This API provides endpoints for contactless heart rate monitoring using remote photoplethysmography (rPPG) technology. The server processes green channel signals extracted from webcam video to estimate heart rate.
+## POST /predict
 
-## Base URL
+Estimate heart rate from an rPPG signal.
 
-```
-http://localhost:3000
-```
+**Request body**
 
-## Authentication
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `signal` | `number[]` | yes | Per-frame green-channel values. Min `MIN_SIGNAL_LENGTH` (50) samples; ~150 recommended (~5 s). |
+| `fs` | `number` | no | Measured capture rate in Hz. Default `30`. Must be `5 ≤ fs ≤ 120`. |
 
-No authentication required for development/demo purposes.
-
-## Endpoints
-
-### POST /predict
-
-Analyzes a photoplethysmographic signal and returns heart rate prediction.
-
-#### Request
-
-**Headers:**
-```
-Content-Type: application/json
-```
-
-**Body:**
 ```json
-{
-  "signal": [0.123, 0.145, 0.132, ...]
-}
+{ "signal": [0.123, 0.145, 0.132], "fs": 29.7 }
 ```
 
-**Parameters:**
-- `signal` (array, required): Array of normalized green channel values extracted from facial video frames
-  - Type: Array of numbers
-  - Range: 0.0 - 1.0 (normalized)
-  - Minimum length: 50 samples
-  - Recommended length: 150 samples (~5 seconds at 30 FPS)
+**Responses**
 
-#### Response
-
-**Success (200 OK):**
+`200` — pulse detected:
 ```json
-{
-  "bpm": 72.5
-}
+{ "bpm": 72.5 }
 ```
 
-**Success with no detection (200 OK):**
+`200` — no reliable pulse (too weak, flat, or outside 40–200 BPM):
 ```json
-{
-  "bpm": null,
-  "message": "No valid heart rate detected"
-}
+{ "bpm": null, "message": "No valid heart rate detected" }
 ```
 
-**Error (400 Bad Request):**
-```json
-{
-  "error": "Signal too short. Minimum 50 samples required",
-  "received": 25
-}
-```
+`400` — bad request (with `error`): non-JSON body, missing/invalid `signal`,
+signal too short, non-numeric values, or `fs` out of range / non-numeric.
 
-**Error (500 Internal Server Error):**
-```json
-{
-  "error": "Internal server error"
-}
-```
-
-#### Response Fields
-
-- `bpm` (number|null): Heart rate in beats per minute, rounded to 1 decimal place
-  - Range: 40-200 BPM (physiological range)
-  - null if no valid heart rate detected
-- `message` (string, optional): Additional information about the result
-- `error` (string, optional): Error description for failed requests
-- `received` (number, optional): Number of samples received (for validation errors)
-
-#### Error Codes
-
-| Status Code | Description |
-|-------------|-------------|
-| 400 | Invalid request format, missing parameters, or insufficient data |
-| 500 | Internal server processing error |
-
-#### Example Usage
-
-**cURL:**
 ```bash
 curl -X POST http://localhost:3000/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "signal": [0.1, 0.15, 0.12, 0.18, 0.14, ...]
-  }'
+  -H 'Content-Type: application/json' \
+  -d '{"signal": [/* >=50 numbers */], "fs": 30}'
 ```
 
-**JavaScript (Fetch):**
-```javascript
-const response = await fetch('/predict', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    signal: greenChannelValues
-  })
-});
+## GET /health
 
-const result = await response.json();
-console.log('Heart rate:', result.bpm);
-```
-
-**Python (requests):**
-```python
-import requests
-
-response = requests.post('http://localhost:3000/predict', 
-  json={'signal': green_channel_values}
-)
-
-result = response.json()
-print(f"Heart rate: {result['bpm']} BPM")
-```
-
-### GET /health
-
-Health check endpoint for monitoring server status.
-
-#### Request
-
-No parameters required.
-
-#### Response
-
-**Success (200 OK):**
 ```json
 {
   "status": "healthy",
-  "version": "1.0.0",
   "config": {
     "min_signal_length": 50,
-    "sampling_rate": 30,
-    "frequency_range": [0.8, 3.0]
+    "default_sampling_rate": 30,
+    "frequency_range_hz": [0.8, 3.0]
   }
 }
 ```
 
-#### Response Fields
-
-- `status` (string): Server health status ("healthy")
-- `version` (string): API version
-- `config` (object): Server configuration parameters
-  - `min_signal_length` (number): Minimum required signal samples
-  - `sampling_rate` (number): Expected sampling frequency (Hz)
-  - `frequency_range` (array): Valid heart rate frequency range (Hz)
-
-### GET /
-
-Serves the classic frontend interface.
-
-#### Request
-
-No parameters required.
-
-#### Response
-
-Returns the main HTML page for the classic frontend interface.
-
-### GET /<path:path>
-
-Serves static files from the frontend directory.
-
-#### Request
-
-**Path Parameters:**
-- `path`: Requested file path relative to frontend directory
-
-#### Response
-
-Returns the requested static file or 404 if not found.
-
-**Error (404 Not Found):**
-```json
-{
-  "error": "File not found"
-}
-```
-
-## Signal Processing Details
-
-### Input Signal Requirements
-
-The API expects a time-series signal representing green channel values extracted from facial regions of interest (ROI). The signal should be:
-
-1. **Normalized**: Values between 0.0 and 1.0
-2. **Continuous**: Evenly sampled at consistent intervals
-3. **Sufficient length**: At least 50 samples, preferably 150 samples
-4. **Clean**: Minimal motion artifacts and good lighting conditions
-
-### Processing Pipeline
-
-1. **Validation**: Input validation and length checking
-2. **Detrending**: DC component removal using scipy.signal.detrend
-3. **Filtering**: 4th-order Butterworth bandpass filter (0.8-3.0 Hz)
-4. **Spectral Analysis**: Welch's method for power spectral density
-5. **Peak Detection**: Identify dominant frequency in physiological range
-6. **BPM Calculation**: Convert frequency to beats per minute
-
-### Frequency Range
-
-- **Minimum**: 0.8 Hz (48 BPM)
-- **Maximum**: 3.0 Hz (180 BPM)
-- **Optimal**: 1.0-2.5 Hz (60-150 BPM)
-
-## Error Handling
-
-### Client Errors (4xx)
-
-| Error | Description | Solution |
-|-------|-------------|----------|
-| 400 - Invalid JSON | Malformed JSON payload | Ensure valid JSON syntax |
-| 400 - Missing signal | Required 'signal' field missing | Include signal array in request body |
-| 400 - Signal too short | Insufficient signal samples | Provide at least 50 samples |
-| 400 - Invalid values | Non-numeric signal values | Ensure all signal values are numbers |
-
-### Server Errors (5xx)
-
-| Error | Description | Possible Causes |
-|-------|-------------|-----------------|
-| 500 - Internal Error | Server processing failed | Invalid signal processing, memory issues |
-
-## Rate Limiting
-
-Currently no rate limiting is implemented. For production use, consider implementing:
-
-- Request rate limiting (e.g., 10 requests/second)
-- Signal buffer size limits
-- Timeout protection for long-running requests
-
-## Security Headers
-
-The API includes security headers:
-
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`  
-- `X-XSS-Protection: 1; mode=block`
-- `Permissions-Policy: camera=(self)`
-
-## Development vs Production
-
-### Development Mode
-- CORS enabled for React development server
-- Detailed error messages
-- Debug logging enabled
-
-### Production Recommendations
-- Disable debug mode
-- Implement rate limiting
-- Add authentication if needed
-- Use HTTPS for secure video access
-- Monitor and log API usage
-
-## Integration Examples
-
-### Frontend Integration
-
-```javascript
-// Example rPPG signal extraction and API call
-class HeartRateMonitor {
-  constructor() {
-    this.greenBuffer = [];
-    this.bufferSize = 150;
-  }
-
-  processFrame(greenValue) {
-    this.greenBuffer.push(greenValue);
-    if (this.greenBuffer.length > this.bufferSize) {
-      this.greenBuffer.shift();
-    }
-
-    if (this.greenBuffer.length === this.bufferSize) {
-      this.computeHeartRate();
-    }
-  }
-
-  async computeHeartRate() {
-    try {
-      const response = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal: this.greenBuffer })
-      });
-
-      const result = await response.json();
-      
-      if (result.bpm) {
-        console.log(`Heart rate: ${result.bpm} BPM`);
-      } else {
-        console.log('No heart rate detected');
-      }
-    } catch (error) {
-      console.error('API error:', error);
-    }
-  }
-}
-```
-
-### Testing
-
-```bash
-# Test health endpoint
-curl http://localhost:3000/health
-
-# Test predict endpoint with sample data
-curl -X POST http://localhost:3000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"signal":[0.1,0.15,0.12,0.18,0.14,0.11,0.16,0.13,0.17,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14]}'
-```
-
-## Advanced Usage
-
-### Batch Processing Multiple Signals
-
-```python
-import requests
-import time
-
-signals = [
-    [0.1, 0.15, 0.12, ...],  # User 1
-    [0.2, 0.25, 0.22, ...],  # User 2
-    [0.3, 0.35, 0.32, ...],  # User 3
-]
-
-for i, signal in enumerate(signals):
-    response = requests.post('http://localhost:3000/predict', 
-        json={'signal': signal}
-    )
-    result = response.json()
-    print(f"User {i+1}: {result['bpm']} BPM")
-    time.sleep(0.1)  # Small delay between requests
-```
-
-### Real-time Monitoring with Confidence
-
-```javascript
-class HeartRateMonitor {
-  constructor(bufferSize = 150) {
-    this.buffer = [];
-    this.bufferSize = bufferSize;
-    this.history = [];
-    this.confidence = 0;
-  }
-
-  async update(greenValue) {
-    this.buffer.push(greenValue);
-    if (this.buffer.length > this.bufferSize) {
-      this.buffer.shift();
-    }
-
-    if (this.buffer.length === this.bufferSize) {
-      const result = await this.predictBPM();
-      if (result.bpm) {
-        this.history.push(result.bpm);
-        this.calculateConfidence();
-      }
-    }
-  }
-
-  async predictBPM() {
-    const response = await fetch('/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ signal: this.buffer })
-    });
-    return await response.json();
-  }
-
-  calculateConfidence() {
-    if (this.history.length < 3) return;
-    
-    const recent = this.history.slice(-3);
-    const avg = recent.reduce((a, b) => a + b) / recent.length;
-    const variance = recent.reduce((sum, val) => 
-      sum + Math.pow(val - avg, 2), 0) / recent.length;
-    
-    // Lower variance = higher confidence
-    this.confidence = Math.max(0, 1 - (variance / 100));
-  }
-
-  getStats() {
-    return {
-      currentBPM: this.history[this.history.length - 1],
-      avgBPM: this.history.reduce((a, b) => a + b) / this.history.length,
-      confidence: this.confidence,
-      samples: this.history.length
-    };
-  }
-}
-```
-
-### Error Handling Best Practices
-
-```javascript
-async function measureHeartRate(signal) {
-  try {
-    const response = await fetch('/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ signal })
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      
-      if (response.status === 400) {
-        console.error('Invalid input:', error.error);
-        // Handle validation errors
-        return { error: 'Please check input data' };
-      }
-      
-      if (response.status === 429) {
-        console.error('Rate limited:', error.error);
-        // Implement exponential backoff
-        await new Promise(r => setTimeout(r, 5000));
-        return measureHeartRate(signal);
-      }
-      
-      if (response.status === 500) {
-        console.error('Server error:', error.error);
-        return { error: 'Server is temporarily unavailable' };
-      }
-    }
-
-    const result = await response.json();
-    
-    if (result.bpm === null) {
-      console.log('No heart rate detected:', result.message);
-      return { error: result.message };
-    }
-
-    return result;
-  } catch (error) {
-    console.error('Network error:', error);
-    return { error: 'Network connection failed' };
-  }
-}
-```
-
-### Testing with cURL
-
-```bash
-# Test with valid signal
-curl -X POST http://localhost:3000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"signal":[0.1,0.15,0.12,0.18,0.14,0.11,0.16,0.13,0.17,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14,0.12,0.16,0.13,0.18,0.11,0.15,0.12,0.17,0.14,0.11,0.16,0.13,0.18,0.12,0.15,0.11,0.19,0.14]}'
-
-# Test with short signal (should fail)
-curl -X POST http://localhost:3000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"signal":[0.1,0.15,0.12]}'
-
-# Test health endpoint
-curl http://localhost:3000/health | jq
-```
-
-### Performance Considerations
-
-- **Signal Length**: 150 samples (5 seconds at 30 FPS) is optimal
-- **Request Size**: Typical request is 1-2 KB (very efficient)
-- **Response Time**: Expected 10-50ms processing time
-- **Throughput**: 1000+ requests per second on modern hardware
-
-### Reliability & Monitoring
-
-```python
-import time
-import statistics
-
-class APIMonitor:
-    def __init__(self):
-        self.response_times = []
-        self.error_count = 0
-        self.success_count = 0
-    
-    def track_request(self, duration):
-        self.response_times.append(duration)
-        
-    def track_error(self):
-        self.error_count += 1
-        
-    def track_success(self):
-        self.success_count += 1
-    
-    def get_stats(self):
-        if not self.response_times:
-            return None
-        
-        return {
-            'avg_time_ms': statistics.mean(self.response_times) * 1000,
-            'p95_time_ms': self._percentile(self.response_times, 0.95) * 1000,
-            'total_requests': self.success_count + self.error_count,
-            'error_rate': self.error_count / (self.success_count + self.error_count)
-        }
-    
-    @staticmethod
-    def _percentile(data, p):
-        index = int(len(data) * p)
-        return sorted(data)[index]
-```
-
-## Version History
-
-### v1.0.0
-- Initial API implementation
-- Basic signal processing pipeline
-- Health check endpoint
-- Static file serving
-- CORS support for development
-
-### v1.1.0 (Current)
-- Enhanced API documentation with advanced examples
-- Batch processing patterns
-- Confidence calculation methods
-- Error handling best practices
-- Performance monitoring utilities
-- cURL testing examples
+## Notes
+
+- The browser measures `fs` from real frame timestamps; sending an accurate `fs`
+  is what keeps the BPM correct, since rate scales the result linearly.
+- Frames stay in the browser — only the 1-D signal is transmitted. The server is
+  stateless and stores nothing.
