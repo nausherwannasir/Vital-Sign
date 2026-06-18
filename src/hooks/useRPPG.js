@@ -7,7 +7,8 @@ const CONFIG = {
   MIN_BRIGHTNESS: 0.2,
   DEFAULT_FPS: 30,
   STRENGTH_SMOOTHING: 0.3, // EMA weight for the signal-strength bar (lower = steadier)
-  MIN_CONFIDENCE: 0.2, // readings below this are treated as unreliable
+  STRENGTH_GAIN: 1.6, // maps raw confidence to a perceptual 0-100% bar
+  MIN_CONFIDENCE: 0.15, // readings below this are treated as unreliable
   BPM_MEMORY_MS: 10000, // rolling-median window that steadies the displayed BPM
 };
 
@@ -85,7 +86,7 @@ export default function useRPPG() {
     const { bpm: reading, confidence } = analyzePulse(pulse, fs);
 
     // EMA-smooth the strength bar so it settles instead of jittering.
-    const target = reading !== null ? confidence * 100 : 0;
+    const target = reading !== null ? Math.min(100, confidence * 100 * CONFIG.STRENGTH_GAIN) : 0;
     strengthRef.current =
       CONFIG.STRENGTH_SMOOTHING * target + (1 - CONFIG.STRENGTH_SMOOTHING) * strengthRef.current;
     setSignalStrength(strengthRef.current);
@@ -103,7 +104,7 @@ export default function useRPPG() {
 
     if (confidence < CONFIG.MIN_CONFIDENCE) {
       setQuality('Weak signal - hold still');
-    } else if (confidence < 0.4) {
+    } else if (confidence < 0.3) {
       setQuality('Fair signal');
     } else {
       setQuality('Good signal');

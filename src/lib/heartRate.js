@@ -98,7 +98,7 @@ export function posPulse(r, g, b) {
   return pulse;
 }
 
-const CONFIDENCE_BW = 0.15; // Hz window around the peak used for the confidence ratio
+const CONFIDENCE_BW = 0.2; // Hz half-window around the fundamental/harmonic for the confidence ratio
 
 /**
  * Analyse a 1-D rPPG signal for its dominant pulse frequency and a confidence.
@@ -106,7 +106,8 @@ const CONFIDENCE_BW = 0.15; // Hz window around the peak used for the confidence
  * @param {number[]} signal - per-frame pulse samples
  * @param {number} fs - sampling rate in Hz (measured camera frame rate)
  * @returns {{bpm: number|null, confidence: number}} BPM (null if unreliable)
- *   and a 0-1 confidence — the share of in-band energy concentrated at the peak.
+ *   and a 0-1 confidence — the share of in-band energy at the pulse fundamental
+ *   plus its first harmonic.
  */
 export function analyzePulse(signal, fs) {
   if (!(fs > 0)) {
@@ -156,16 +157,22 @@ export function analyzePulse(signal, fs) {
   }
   if (peak < 0) return none;
 
-  // Confidence: fraction of in-band energy concentrated near the peak. A clean
-  // tone packs its energy into one lobe (high); noise spreads it out (low).
+  // Confidence: share of in-band energy at the pulse fundamental AND its first
+  // harmonic. A real pulse has both (raising the score); broadband noise has
+  // neither concentrated, so it stays low. The harmonic term is what lets a
+  // genuine but imperfect webcam signal read as "good" rather than ~30%.
+  const fundamental = freqs[peak];
+  const harmonic = 2 * fundamental;
   let totalBand = 0;
-  let nearPeak = 0;
+  let signalEnergy = 0;
   for (let k = 0; k < freqs.length; k++) {
     if (freqs[k] < MIN_HR_FREQ || freqs[k] > MAX_HR_FREQ) continue;
     totalBand += power[k];
-    if (Math.abs(freqs[k] - freqs[peak]) <= CONFIDENCE_BW) nearPeak += power[k];
+    const nearFundamental = Math.abs(freqs[k] - fundamental) <= CONFIDENCE_BW;
+    const nearHarmonic = Math.abs(freqs[k] - harmonic) <= CONFIDENCE_BW;
+    if (nearFundamental || nearHarmonic) signalEnergy += power[k];
   }
-  const confidence = totalBand > 0 ? Math.min(1, Math.max(0, nearPeak / totalBand)) : 0;
+  const confidence = totalBand > 0 ? Math.min(1, Math.max(0, signalEnergy / totalBand)) : 0;
 
   // Parabolic interpolation refines the peak to sub-grid accuracy.
   let peakFreq = freqs[peak];
