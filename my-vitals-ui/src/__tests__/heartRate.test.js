@@ -1,4 +1,4 @@
-import { computeBpm, posPulse } from '../lib/heartRate';
+import { computeBpm, posPulse, analyzePulse } from '../lib/heartRate';
 
 /** Build a pure sinusoid at `bpm` beats per minute, sampled at `fs` Hz. */
 function sine(bpm, fs, seconds, amp = 0.1, offset = 0.5) {
@@ -68,6 +68,22 @@ describe('computeBpm', () => {
 
   it('throws on a non-positive sampling rate', () => {
     expect(() => computeBpm(new Array(150).fill(0.5), 0)).toThrow();
+  });
+});
+
+describe('analyzePulse confidence', () => {
+  it('is high for a clean tone and low for noise', () => {
+    const clean = analyzePulse(sine(72, 30, 6), 30);
+    expect(clean.bpm).not.toBeNull();
+    expect(clean.confidence).toBeGreaterThan(0.3);
+
+    const noise = Array.from({ length: 180 }, () => Math.random() - 0.5);
+    const noisy = analyzePulse(noise, 30);
+    expect(clean.confidence).toBeGreaterThan(noisy.confidence);
+  });
+
+  it('reports zero confidence for a flat signal', () => {
+    expect(analyzePulse(new Array(150).fill(0.5), 30).confidence).toBe(0);
   });
 });
 

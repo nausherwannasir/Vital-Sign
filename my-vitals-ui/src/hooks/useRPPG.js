@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { posPulse, analyzePulse } from '../lib/heartRate';
 
 const CONFIG = {
-  BUFFER_SIZE: 150,
-  UPDATE_INTERVAL: 1000,
+  BUFFER_SIZE: 150, // ~5 s at 30 fps
+  UPDATE_INTERVAL: 1000, // ms between heart-rate estimates
   MIN_BRIGHTNESS: 0.2,
-  MIN_SIGNAL_STD: 0.0002,
-  API_TIMEOUT: 5000,
   DEFAULT_FPS: 30,
+  STRENGTH_SMOOTHING: 0.3, // EMA weight for the signal-strength bar (lower = steadier)
+  MIN_CONFIDENCE: 0.2, // readings below this are treated as unreliable
+  BPM_MEMORY_MS: 10000, // rolling-median window that steadies the displayed BPM
 };
 
 /**
@@ -21,6 +23,18 @@ function measureSamplingRate(timestamps) {
   return Math.min(120, Math.max(5, fps));
 }
 
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * rPPG state machine: buffers per-frame RGB means, then once a second derives a
+ * pulse signal (POS), estimates BPM, and smooths both the heart rate (rolling
+ * median) and the signal-strength bar (EMA) so the UI reads steadily instead of
+ * flickering frame to frame. All processing is on-device — nothing is uploaded.
+ */
 export default function useRPPG() {
   const [bpm, setBpm] = useState(null);
   const [quality, setQuality] = useState('Initializing...');
@@ -29,125 +43,72 @@ export default function useRPPG() {
   const [signalStrength, setSignalStrength] = useState(0);
   const [bufferSize, setBufferSize] = useState(0);
 
-  const greenBufferRef = useRef([]);
-  const timestampBufferRef = useRef([]);
-  const processingRef = useRef(false);
+  const rRef = useRef([]);
+  const gRef = useRef([]);
+  const bRef = useRef([]);
+  const tRef = useRef([]);
+  const strengthRef = useRef(0);
+  const bpmHistoryRef = useRef([]); // [{ bpm, t }]
   const lastUpdateRef = useRef(0);
 
-  const detrend = useCallback((signal) => {
-    if (!signal || signal.length === 0) return [];
-    const mean = signal.reduce((sum, val) => sum + val, 0) / signal.length;
-    return signal.map((val) => val - mean);
+  const processFrame = useCallback((frame) => {
+    const { r, g, b, brightness } = frame;
+    setLighting(brightness < CONFIG.MIN_BRIGHTNESS ? 'Poor lighting' : 'Good lighting');
+
+    rRef.current.push(r);
+    gRef.current.push(g);
+    bRef.current.push(b);
+    tRef.current.push(performance.now());
+    if (rRef.current.length > CONFIG.BUFFER_SIZE) {
+      rRef.current.shift();
+      gRef.current.shift();
+      bRef.current.shift();
+      tRef.current.shift();
+    }
+    setBufferSize(rRef.current.length);
+
+    if (rRef.current.length < CONFIG.BUFFER_SIZE) {
+      setQuality(`Collecting data... ${rRef.current.length}/${CONFIG.BUFFER_SIZE}`);
+    }
   }, []);
 
-  const calculateSignalQuality = useCallback((signal) => {
-    if (signal.length < 20) return 0;
-    const std = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
-    return Math.min(100, Math.max(0, std * 10000));
-  }, []);
-
-  const processFrame = useCallback(
-    (greenValue, brightness) => {
-      setLighting(brightness < CONFIG.MIN_BRIGHTNESS ? 'Poor lighting' : 'Good lighting');
-
-      greenBufferRef.current.push(greenValue);
-      timestampBufferRef.current.push(performance.now());
-      if (greenBufferRef.current.length > CONFIG.BUFFER_SIZE) {
-        greenBufferRef.current.shift();
-        timestampBufferRef.current.shift();
-      }
-      setBufferSize(greenBufferRef.current.length);
-
-      const currentSignal = greenBufferRef.current.slice(-30);
-      const detrendedSignal = detrend(currentSignal);
-      const strength = calculateSignalQuality(detrendedSignal);
-      setSignalStrength(strength);
-
-      if (greenBufferRef.current.length < CONFIG.BUFFER_SIZE) {
-        setQuality(`Collecting data... ${greenBufferRef.current.length}/${CONFIG.BUFFER_SIZE}`);
-      } else if (strength < 5) {
-        setQuality('Weak signal - stay still');
-      } else if (strength < 20) {
-        setQuality('Fair signal');
-      } else {
-        setQuality('Good signal');
-      }
-    },
-    [calculateSignalQuality, detrend]
-  );
-
-  const computeHeartRate = useCallback(async () => {
+  const computeHeartRate = useCallback(() => {
     const now = Date.now();
-    if (now - lastUpdateRef.current < CONFIG.UPDATE_INTERVAL || processingRef.current) {
-      return;
-    }
-    if (greenBufferRef.current.length < CONFIG.BUFFER_SIZE) {
-      return;
-    }
-
-    processingRef.current = true;
-    setIsProcessing(true);
+    if (now - lastUpdateRef.current < CONFIG.UPDATE_INTERVAL) return;
+    if (rRef.current.length < CONFIG.BUFFER_SIZE) return;
     lastUpdateRef.current = now;
 
-    try {
-      const signal = detrend([...greenBufferRef.current]);
-      const signalStd = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
+    // The camera rarely runs at exactly 30 fps, and a wrong fs scales BPM
+    // linearly, so measure it from the real frame timestamps.
+    const fs = measureSamplingRate(tRef.current);
+    const pulse = posPulse(rRef.current, gRef.current, bRef.current);
+    const { bpm: reading, confidence } = analyzePulse(pulse, fs);
 
-      if (signalStd < CONFIG.MIN_SIGNAL_STD) {
-        setBpm(null);
-        setQuality('Signal too weak - check lighting and remain still');
-        return;
-      }
+    // EMA-smooth the strength bar so it settles instead of jittering.
+    const target = reading !== null ? confidence * 100 : 0;
+    strengthRef.current =
+      CONFIG.STRENGTH_SMOOTHING * target + (1 - CONFIG.STRENGTH_SMOOTHING) * strengthRef.current;
+    setSignalStrength(strengthRef.current);
 
-      // Measure the real capture rate — the camera rarely runs at exactly
-      // 30 fps, and a wrong fs scales the reported BPM linearly.
-      const fs = measureSamplingRate(timestampBufferRef.current);
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), CONFIG.API_TIMEOUT);
-
-      const response = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal, fs }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('API error:', errorData);
-        setBpm(null);
-        setQuality(`Error: ${errorData.error || 'Unknown error'}`);
-        return;
-      }
-
-      const result = await response.json();
-
-      if (result.bpm !== null && result.bpm !== undefined) {
-        setBpm(Math.round(result.bpm * 10) / 10);
-        setQuality('Heart rate detected');
-      } else {
-        setBpm(null);
-        setQuality(result.message || 'No heart rate detected');
-      }
-    } catch (error) {
-      console.error('Heart rate computation failed:', error);
-      setBpm(null);
-
-      if (error.name === 'AbortError') {
-        setQuality('Request timeout');
-      } else if (error.message.includes('fetch')) {
-        setQuality('Connection error');
-      } else {
-        setQuality('Processing error');
-      }
-    } finally {
-      processingRef.current = false;
-      setIsProcessing(false);
+    // Keep a short rolling history of confident readings; show their median so
+    // a single noisy estimate can't make the number jump.
+    const history = bpmHistoryRef.current;
+    if (reading !== null && confidence >= CONFIG.MIN_CONFIDENCE) {
+      history.push({ bpm: reading, t: now });
     }
-  }, [detrend]);
+    while (history.length && now - history[0].t > CONFIG.BPM_MEMORY_MS) {
+      history.shift();
+    }
+    setBpm(history.length ? Math.round(median(history.map((h) => h.bpm)) * 10) / 10 : null);
+
+    if (confidence < CONFIG.MIN_CONFIDENCE) {
+      setQuality('Weak signal - hold still');
+    } else if (confidence < 0.4) {
+      setQuality('Fair signal');
+    } else {
+      setQuality('Good signal');
+    }
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(computeHeartRate, CONFIG.UPDATE_INTERVAL);
@@ -155,8 +116,13 @@ export default function useRPPG() {
   }, [computeHeartRate]);
 
   const reset = useCallback(() => {
-    greenBufferRef.current = [];
-    timestampBufferRef.current = [];
+    rRef.current = [];
+    gRef.current = [];
+    bRef.current = [];
+    tRef.current = [];
+    strengthRef.current = 0;
+    bpmHistoryRef.current = [];
+    lastUpdateRef.current = 0;
     setBpm(null);
     setQuality('Initializing...');
     setLighting('Initializing...');
