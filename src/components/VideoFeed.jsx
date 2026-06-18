@@ -32,7 +32,7 @@ export default function VideoFeed({ className, onFrameData }) {
       VIDEO_WIDTH: 640,
       VIDEO_HEIGHT: 480,
       PROCESSING_SIZE: 64,
-      ROI_SCALE: 0.1,
+      ROI_SCALE: 0.15, // larger skin patches average out noise -> stronger pulse
     };
 
     // Initialize face mesh. Assets are bundled locally (see vite.config.js) and
@@ -60,12 +60,26 @@ export default function VideoFeed({ className, onFrameData }) {
 
       const landmarks = results.multiFaceLandmarks[0];
 
-      // Draw facial landmarks for visual feedback
+      // Faint landmark mesh for visual feedback.
+      overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.25)';
       landmarks.forEach(({ x, y }) => {
-        overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.6)';
         overlayCtx.beginPath();
-        overlayCtx.arc(x * overlayCanvas.width, y * overlayCanvas.height, 1.5, 0, 2 * Math.PI);
+        overlayCtx.arc(x * overlayCanvas.width, y * overlayCanvas.height, 0.9, 0, 2 * Math.PI);
         overlayCtx.fill();
+      });
+
+      // Highlight the three ROIs actually sampled (forehead, nose, chin) so the
+      // mask reads as intentional and shows what's being measured.
+      const { centers, roiSize } = faceRegions(landmarks, CONFIG);
+      overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.95)';
+      overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.15)';
+      overlayCtx.lineWidth = 2;
+      centers.forEach(({ x, y }) => {
+        const s = roiSize * 2;
+        overlayCtx.beginPath();
+        overlayCtx.rect(x - roiSize, y - roiSize, s, s);
+        overlayCtx.fill();
+        overlayCtx.stroke();
       });
 
       // Extract rPPG signal if callback is provided
@@ -113,12 +127,14 @@ export default function VideoFeed({ className, onFrameData }) {
         style={{ transform: 'scaleX(-1)' }} // Mirror for natural selfie view
       />
 
-      {/* Overlay canvas for landmarks */}
+      {/* Overlay canvas for landmarks. Mirrored to match the selfie-flipped
+          video so the mesh lands on the face (MediaPipe coords are unmirrored). */}
       <canvas
         ref={overlayCanvasRef}
         className="absolute top-0 left-0 w-full h-full pointer-events-none rounded-lg"
         width={640}
         height={480}
+        style={{ transform: 'scaleX(-1)' }}
       />
 
       {/* Hidden canvas for video frame capture */}
@@ -131,6 +147,36 @@ export default function VideoFeed({ className, onFrameData }) {
 }
 
 /**
+ * The three skin ROIs (forehead, nose, chin) in video-pixel coordinates, plus
+ * their half-size. Shared by the overlay (to draw the mask) and the signal
+ * extraction (to sample), so they always agree.
+ *
+ * @param {Array} landmarks - Facial landmark coordinates (normalized 0-1)
+ * @param {Object} config - Configuration object
+ * @returns {{centers: {x: number, y: number}[], roiSize: number}}
+ */
+function faceRegions(landmarks, config) {
+  const leftEye = landmarks[33]; // Left eye outer corner
+  const rightEye = landmarks[263]; // Right eye outer corner
+  const faceWidth = (rightEye.x - leftEye.x) * config.VIDEO_WIDTH;
+  const roiSize = faceWidth * config.ROI_SCALE;
+
+  const centers = [
+    // Forehead
+    {
+      x: ((landmarks[19].x + landmarks[24].x) / 2) * config.VIDEO_WIDTH,
+      y: ((landmarks[19].y + landmarks[24].y) / 2) * config.VIDEO_HEIGHT - faceWidth * 0.1,
+    },
+    // Nose
+    { x: landmarks[2].x * config.VIDEO_WIDTH, y: landmarks[2].y * config.VIDEO_HEIGHT },
+    // Chin
+    { x: landmarks[14].x * config.VIDEO_WIDTH, y: landmarks[14].y * config.VIDEO_HEIGHT },
+  ];
+
+  return { centers, roiSize };
+}
+
+/**
  * Extract rPPG signal from facial landmarks
  *
  * @param {Array} landmarks - Facial landmark coordinates
@@ -140,30 +186,7 @@ export default function VideoFeed({ className, onFrameData }) {
  * @returns {Object} Per-frame mean { r, g, b, brightness }, each in [0, 1]
  */
 function extractRPPGSignal(landmarks, video, ctx, config) {
-  // Calculate face width using eye corners
-  const leftEye = landmarks[33]; // Left eye outer corner
-  const rightEye = landmarks[263]; // Right eye outer corner
-  const faceWidth = (rightEye.x - leftEye.x) * config.VIDEO_WIDTH;
-  const roiSize = faceWidth * config.ROI_SCALE;
-
-  // Define regions of interest
-  const regions = [
-    // Forehead region
-    {
-      x: ((landmarks[19].x + landmarks[24].x) / 2) * config.VIDEO_WIDTH,
-      y: ((landmarks[19].y + landmarks[24].y) / 2) * config.VIDEO_HEIGHT - faceWidth * 0.1,
-    },
-    // Nose region
-    {
-      x: landmarks[2].x * config.VIDEO_WIDTH,
-      y: landmarks[2].y * config.VIDEO_HEIGHT,
-    },
-    // Chin region
-    {
-      x: landmarks[14].x * config.VIDEO_WIDTH,
-      y: landmarks[14].y * config.VIDEO_HEIGHT,
-    },
-  ];
+  const { centers: regions, roiSize } = faceRegions(landmarks, config);
 
   let totalRed = 0;
   let totalGreen = 0;
