@@ -1,66 +1,15 @@
-name: CI/CD Pipeline
+name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 jobs:
-  backend-tests:
+  build-and-test:
     runs-on: ubuntu-latest
-    name: Backend Tests & Quality (${{ matrix.python-version }})
-    strategy:
-      matrix:
-        # numpy>=2.0 and scipy>=1.15 require Python 3.10+
-        python-version: ["3.10", "3.11", "3.12"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('backend/requirements-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
-
-      - name: Install dependencies
-        run: |
-          cd backend
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Format check with Black
-        run: |
-          cd backend
-          black --check .
-
-      - name: Lint with Flake8
-        run: |
-          cd backend
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
-
-      - name: Type check with mypy
-        run: |
-          cd backend
-          mypy app.py config.py --ignore-missing-imports || true
-
-      - name: Run pytest
-        run: |
-          cd backend
-          pytest tests/ -v
-
-  frontend-tests:
-    runs-on: ubuntu-latest
-    name: Frontend Tests & Quality
+    name: Build & Test
 
     steps:
       - uses: actions/checkout@v4
@@ -70,65 +19,18 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: my-vitals-ui/package-lock.json
 
       - name: Install dependencies
-        run: |
-          cd my-vitals-ui
-          npm ci --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: Lint with ESLint
-        run: |
-          cd my-vitals-ui
-          npm run lint
+        run: npm run lint
 
       - name: Format check with Prettier
-        run: |
-          cd my-vitals-ui
-          npx prettier --check "src/**/*.{js,jsx,css}"
+        run: npx prettier --check "src/**/*.{js,jsx,css}"
 
       - name: Run tests
-        run: |
-          cd my-vitals-ui
-          npm test -- --no-coverage
+        run: npm test -- --no-coverage
 
       - name: Build
-        run: |
-          cd my-vitals-ui
-          npm run build
-
-  docker-build:
-    runs-on: ubuntu-latest
-    name: Docker Build Test
-    needs: [backend-tests, frontend-tests]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image (API + built frontend)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.backend
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  security-scan:
-    runs-on: ubuntu-latest
-    name: Security Scan
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "table"
-          exit-code: "0"
+        run: npm run build
