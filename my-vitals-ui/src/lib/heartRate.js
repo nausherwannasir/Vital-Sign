@@ -98,24 +98,28 @@ export function posPulse(r, g, b) {
   return pulse;
 }
 
+const CONFIDENCE_BW = 0.15; // Hz window around the peak used for the confidence ratio
+
 /**
- * Estimate heart rate (BPM) from a 1-D rPPG signal.
+ * Analyse a 1-D rPPG signal for its dominant pulse frequency and a confidence.
  *
  * @param {number[]} signal - per-frame pulse samples
  * @param {number} fs - sampling rate in Hz (measured camera frame rate)
- * @returns {number|null} BPM, or null when no reliable pulse is found
+ * @returns {{bpm: number|null, confidence: number}} BPM (null if unreliable)
+ *   and a 0-1 confidence — the share of in-band energy concentrated at the peak.
  */
-export function computeBpm(signal, fs) {
+export function analyzePulse(signal, fs) {
   if (!(fs > 0)) {
     throw new Error('Sampling frequency must be positive');
   }
+  const none = { bpm: null, confidence: 0 };
   if (!signal || signal.length < MIN_SIGNAL_LENGTH) {
-    return null;
+    return none;
   }
 
   const detrended = linearDetrend(Array.from(signal, Number));
   if (std(detrended) < FLAT_SIGNAL_STD) {
-    return null;
+    return none;
   }
 
   // Hann window to suppress spectral leakage from the finite buffer.
@@ -150,7 +154,18 @@ export function computeBpm(signal, fs) {
       peak = k;
     }
   }
-  if (peak < 0) return null;
+  if (peak < 0) return none;
+
+  // Confidence: fraction of in-band energy concentrated near the peak. A clean
+  // tone packs its energy into one lobe (high); noise spreads it out (low).
+  let totalBand = 0;
+  let nearPeak = 0;
+  for (let k = 0; k < freqs.length; k++) {
+    if (freqs[k] < MIN_HR_FREQ || freqs[k] > MAX_HR_FREQ) continue;
+    totalBand += power[k];
+    if (Math.abs(freqs[k] - freqs[peak]) <= CONFIDENCE_BW) nearPeak += power[k];
+  }
+  const confidence = totalBand > 0 ? Math.min(1, Math.max(0, nearPeak / totalBand)) : 0;
 
   // Parabolic interpolation refines the peak to sub-grid accuracy.
   let peakFreq = freqs[peak];
@@ -165,6 +180,17 @@ export function computeBpm(signal, fs) {
   }
 
   const bpm = peakFreq * 60;
-  if (bpm < MIN_BPM || bpm > MAX_BPM) return null;
-  return Math.round(bpm * 10) / 10;
+  if (bpm < MIN_BPM || bpm > MAX_BPM) return none;
+  return { bpm: Math.round(bpm * 10) / 10, confidence };
+}
+
+/**
+ * Estimate heart rate (BPM) from a 1-D rPPG signal.
+ *
+ * @param {number[]} signal - per-frame pulse samples
+ * @param {number} fs - sampling rate in Hz (measured camera frame rate)
+ * @returns {number|null} BPM, or null when no reliable pulse is found
+ */
+export function computeBpm(signal, fs) {
+  return analyzePulse(signal, fs).bpm;
 }

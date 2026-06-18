@@ -1,31 +1,39 @@
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import useRPPG from '../hooks/useRPPG';
 
-// Mock fetch
-global.fetch = jest.fn();
-
 describe('useRPPG Hook', () => {
-  beforeAll(() => {
-    jest.useFakeTimers();
-  });
+  let nowMs;
 
   beforeEach(() => {
-    fetch.mockClear();
+    jest.useFakeTimers();
+    nowMs = 0;
+    // Deterministic 30 fps frame timestamps so fs measurement is reproducible.
+    jest.spyOn(performance, 'now').mockImplementation(() => nowMs);
   });
 
-  afterAll(() => {
+  afterEach(() => {
+    performance.now.mockRestore();
     jest.useRealTimers();
   });
 
-  const fillSignalBuffer = (result, generator) => {
+  // Feed `count` frames of a clean RGB pulse at `bpm` (sampled at 30 fps).
+  const feedPulse = (result, count, bpm = 72) => {
+    const f = bpm / 60;
     act(() => {
-      for (let i = 0; i < result.current.maxBufferSize; i += 1) {
-        result.current.processFrame(generator(i), 0.6);
+      for (let i = 0; i < count; i += 1) {
+        const pulse = Math.sin((2 * Math.PI * f * i) / 30);
+        result.current.processFrame({
+          r: 0.6 * (1 + 0.005 * pulse),
+          g: 0.5 * (1 + 0.02 * pulse),
+          b: 0.45 * (1 + 0.008 * pulse),
+          brightness: 0.6,
+        });
+        nowMs += 1000 / 30;
       }
     });
   };
 
-  it('initializes with current hook defaults', () => {
+  it('initializes with defaults', () => {
     const { result } = renderHook(() => useRPPG());
 
     expect(result.current.bpm).toBeNull();
@@ -35,48 +43,35 @@ describe('useRPPG Hook', () => {
     expect(result.current.signalStrength).toBe(0);
   });
 
-  it('updates lighting and quality while collecting data', () => {
+  it('updates lighting and shows collecting progress', () => {
     const { result } = renderHook(() => useRPPG());
 
     act(() => {
-      result.current.processFrame(0.55, 0.1);
+      result.current.processFrame({ r: 0.5, g: 0.5, b: 0.5, brightness: 0.1 });
     });
 
     expect(result.current.lighting).toBe('Poor lighting');
     expect(result.current.quality).toMatch(/collecting data/i);
   });
 
-  it('classifies stable pulse signal as fair or good after buffer is full', () => {
+  it('computes a heart rate locally from a clean pulse', () => {
     const { result } = renderHook(() => useRPPG());
-    fillSignalBuffer(result, (i) => 0.55 + Math.sin(i / 4) * 0.01);
-
+    feedPulse(result, result.current.maxBufferSize);
     expect(result.current.bufferSize).toBe(result.current.maxBufferSize);
+
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+
+    expect(result.current.bpm).not.toBeNull();
+    expect(Math.abs(result.current.bpm - 72)).toBeLessThan(5);
     expect(['Fair signal', 'Good signal']).toContain(result.current.quality);
     expect(result.current.signalStrength).toBeGreaterThan(0);
   });
 
-  it('computes heart rate and updates bpm from API response', async () => {
-    fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ bpm: 72.34 }),
-    });
-
-    const { result } = renderHook(() => useRPPG());
-    fillSignalBuffer(result, (i) => 0.55 + Math.sin(i / 4) * 0.01);
-
-    await act(async () => {
-      jest.advanceTimersByTime(1000);
-    });
-
-    await waitFor(() => {
-      expect(result.current.bpm).toBe(72.3);
-    });
-    expect(result.current.quality).toBe('Heart rate detected');
-  });
-
   it('reset clears buffered state', () => {
     const { result } = renderHook(() => useRPPG());
-    fillSignalBuffer(result, (i) => 0.55 + Math.sin(i / 5) * 0.01);
+    feedPulse(result, result.current.maxBufferSize);
 
     act(() => {
       result.current.reset();

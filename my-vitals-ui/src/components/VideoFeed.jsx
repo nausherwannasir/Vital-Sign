@@ -8,7 +8,7 @@ import PropTypes from 'prop-types';
  *
  * @param {Object} props - Component props
  * @param {string} props.className - CSS classes to apply
- * @param {Function} props.onFrameData - Callback for processing frame data (greenValue, brightness)
+ * @param {Function} props.onFrameData - Callback receiving per-frame { r, g, b, brightness }
  */
 export default function VideoFeed({ className, onFrameData }) {
   const videoRef = useRef();
@@ -70,13 +70,7 @@ export default function VideoFeed({ className, onFrameData }) {
       // Extract rPPG signal if callback is provided
       if (onFrameData) {
         try {
-          const { greenValue, brightness } = extractRPPGSignal(
-            landmarks,
-            video,
-            processingCtx,
-            CONFIG
-          );
-          onFrameData(greenValue, brightness);
+          onFrameData(extractRPPGSignal(landmarks, video, processingCtx, CONFIG));
         } catch (error) {
           console.error('Error extracting rPPG signal:', error);
         }
@@ -142,7 +136,7 @@ export default function VideoFeed({ className, onFrameData }) {
  * @param {HTMLVideoElement} video - Video element
  * @param {CanvasRenderingContext2D} ctx - Processing canvas context
  * @param {Object} config - Configuration object
- * @returns {Object} Extracted green value and brightness
+ * @returns {Object} Per-frame mean { r, g, b, brightness }, each in [0, 1]
  */
 function extractRPPGSignal(landmarks, video, ctx, config) {
   // Calculate face width using eye corners
@@ -170,7 +164,9 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
     },
   ];
 
+  let totalRed = 0;
   let totalGreen = 0;
+  let totalBlue = 0;
   let totalBrightness = 0;
   let validRegions = 0;
 
@@ -198,7 +194,9 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
 
     const imageData = ctx.getImageData(0, 0, config.PROCESSING_SIZE, config.PROCESSING_SIZE).data;
 
+    let regionRed = 0;
     let regionGreen = 0;
+    let regionBlue = 0;
     let regionBrightness = 0;
     const pixelCount = imageData.length / 4;
 
@@ -208,18 +206,27 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
       const g = imageData[i + 1];
       const b = imageData[i + 2];
 
+      regionRed += r;
       regionGreen += g;
+      regionBlue += b;
       regionBrightness += 0.299 * r + 0.587 * g + 0.114 * b;
     }
 
+    totalRed += regionRed / pixelCount / 255;
     totalGreen += regionGreen / pixelCount / 255;
+    totalBlue += regionBlue / pixelCount / 255;
     totalBrightness += regionBrightness / pixelCount / 255;
     validRegions++;
   });
 
+  if (validRegions === 0) {
+    return { r: 0, g: 0, b: 0, brightness: 0 };
+  }
   return {
-    greenValue: validRegions > 0 ? totalGreen / validRegions : 0,
-    brightness: validRegions > 0 ? totalBrightness / validRegions : 0,
+    r: totalRed / validRegions,
+    g: totalGreen / validRegions,
+    b: totalBlue / validRegions,
+    brightness: totalBrightness / validRegions,
   };
 }
 
