@@ -27,7 +27,7 @@ leaves the browser.
 ## Quick start
 
 ```bash
-npm install --legacy-peer-deps
+npm install
 npm run dev
 # open http://localhost:5173
 ```
