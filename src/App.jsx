@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import VideoFeed from './components/VideoFeed';
 import Dashboard from './components/Dashboard';
 import useRPPG from './hooks/useRPPG';
@@ -14,6 +14,7 @@ import { HeartIcon } from '@heroicons/react/24/solid';
 export default function App() {
   // Initialize rPPG hook for heart rate processing
   const rppgData = useRPPG();
+  const [cameraError, setCameraError] = useState(null);
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -23,7 +24,17 @@ export default function App() {
           <VideoFeed
             className="shadow-2xl rounded-2xl overflow-hidden border-4 border-white"
             onFrameData={rppgData.processFrame}
+            onError={setCameraError}
           />
+
+          {cameraError && (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-800"
+            >
+              {cameraError}
+            </div>
+          )}
 
           {/* Quick Status Indicators */}
           <div className="mt-4 flex justify-center space-x-4">
