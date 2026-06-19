@@ -9,20 +9,25 @@ import PropTypes from 'prop-types';
  * @param {Object} props - Component props
  * @param {string} props.className - CSS classes to apply
  * @param {Function} props.onFrameData - Callback receiving per-frame { r, g, b, brightness }
+ * @param {Function} props.onError - Called with a human-readable message if the camera can't start
  */
-export default function VideoFeed({ className, onFrameData }) {
+export default function VideoFeed({ className, onFrameData, onError }) {
   const videoRef = useRef();
-  const canvasRef = useRef();
   const overlayCanvasRef = useRef();
   const processingCanvasRef = useRef();
 
   useEffect(() => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
     const processingCanvas = processingCanvasRef.current;
 
-    if (!video || !canvas || !overlayCanvas || !processingCanvas) return;
+    if (!video || !overlayCanvas || !processingCanvas) return undefined;
+
+    // getUserMedia is unavailable on insecure (non-HTTPS) origins and old browsers.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      onError?.('Camera access needs a secure (HTTPS) connection in a supported browser.');
+      return undefined;
+    }
 
     const overlayCtx = overlayCanvas.getContext('2d');
     const processingCtx = processingCanvas.getContext('2d');
@@ -96,14 +101,22 @@ export default function VideoFeed({ className, onFrameData }) {
     const camera = new Camera(video, {
       onFrame: async () => {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-          await faceMesh.send({ image: video });
+          try {
+            await faceMesh.send({ image: video });
+          } catch (error) {
+            // A transient frame failure shouldn't crash the loop.
+            console.error('FaceMesh processing error:', error);
+          }
         }
       },
       width: CONFIG.VIDEO_WIDTH,
       height: CONFIG.VIDEO_HEIGHT,
     });
 
-    camera.start();
+    camera.start().catch((error) => {
+      console.error('Camera start failed:', error);
+      onError?.(describeCameraError(error));
+    });
 
     // Cleanup function
     return () => {
@@ -113,7 +126,7 @@ export default function VideoFeed({ className, onFrameData }) {
         video.srcObject.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [onFrameData]);
+  }, [onFrameData, onError]);
 
   return (
     <div className={`${className} relative w-full`} style={{ maxWidth: 640 }}>
@@ -136,9 +149,6 @@ export default function VideoFeed({ className, onFrameData }) {
         height={480}
         style={{ transform: 'scaleX(-1)' }}
       />
-
-      {/* Hidden canvas for video frame capture */}
-      <canvas ref={canvasRef} className="hidden" width={640} height={480} />
 
       {/* Hidden processing canvas for ROI analysis */}
       <canvas ref={processingCanvasRef} className="hidden" width={64} height={64} />
@@ -257,4 +267,22 @@ function extractRPPGSignal(landmarks, video, ctx, config) {
 VideoFeed.propTypes = {
   className: PropTypes.string,
   onFrameData: PropTypes.func,
+  onError: PropTypes.func,
 };
+
+/** Map a getUserMedia/Camera failure to a message a user can act on. */
+function describeCameraError(error) {
+  switch (error?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera access was blocked. Allow camera permission, then reload.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'No camera was found on this device.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'The camera is already in use by another app.';
+    default:
+      return 'Could not start the camera. Check permissions and reload.';
+  }
+}
